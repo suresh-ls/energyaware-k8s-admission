@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: carbongate-smoke-test
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: carbongate-local-queue
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: carbongate-smoke-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: registry.k8s.io/e2e-test-images/agnhost:2.53
+          command: ["/bin/sh", "-c"]
+          args:
+            - echo "CarbonGate A1 smoke test passed"; sleep 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
