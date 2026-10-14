@@ -1,0 +1,76 @@
+apiVersion: v1
+data:
+  config.yaml: |
+    cpu:
+      preferredMeters:
+      - rapl
+      - hwmon
+    debug:
+      pprof:
+        enabled: false
+    dev:
+      fake-cpu-meter:
+        enabled: true
+        zones: []
+    experimental:
+      gpu:
+        dcgmEndpoint: ""
+        enabled: false
+        idlePower: 0
+      hwmon:
+        chipRules: []
+        forceEnabled: false
+        zones: []
+      platform:
+        redfish:
+          configFile: /etc/kepler/redfish.yaml
+          enabled: false
+          nodeName: ""
+    exporter:
+      prometheus:
+        debugCollectors:
+        - go
+        enabled: true
+      stdout:
+        enabled: false
+    host:
+      procfs: /host/proc
+      sysfs: /host/sys
+    kube:
+      config: ""
+      enabled: false
+      nodeName: ""
+      podInformer:
+        mode: kubelet
+        pollInterval: 15s
+    log:
+      format: text
+      level: debug
+    monitor:
+      interval: 5s
+      maxTerminated: 100
+      minTerminatedEnergyThreshold: 10
+      staleness: 500ms
+    rapl:
+      zones: []
+    web:
+      configFile: ""
+      listenAddresses:
+      - :28282
+kind: ConfigMap
+metadata:
+  annotations:
+    meta.helm.sh/release-name: kepler
+    meta.helm.sh/release-namespace: kepler
+  creationTimestamp: "2026-10-14T05:20:27Z"
+  labels:
+    app.kubernetes.io/instance: kepler
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kepler
+    app.kubernetes.io/part-of: kepler
+    app.kubernetes.io/version: v0.12.0
+    helm.sh/chart: kepler-0.12.0
+  name: kepler
+  namespace: kepler
+  resourceVersion: "1683"
+  uid: b24ebb4c-13cb-46cf-9d87-19d44ff0c208
