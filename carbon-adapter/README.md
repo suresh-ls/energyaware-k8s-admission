@@ -1,38 +1,65 @@
 
 # Carbon Signal Adapter
 
-Fetches carbon intensity data from the Electricity Maps API and converts it into the normalized signal format used by EnergyGate.
+The Carbon Signal Adapter fetches the latest carbon intensity from the Electricity Maps API and converts it into the normalized JSON signal format used by EnergyGate.
 
-## Implemented
+## Requirements
 
-- Fetches the latest carbon intensity for a configured electricity zone.
-- Validates the API response, including required fields and non-negative carbon intensity.
-- Handles HTTP errors, invalid JSON, and missing API tokens.
-- Converts the response into a normalized JSON signal with timestamp, validity, and freshness status.
-- Includes 10 unit tests covering success and error cases.
+- Go installed
+- An Electricity Maps API token
 
 ## Configuration
 
-Set these environment variables before running:
+Set the following environment variables:
 
-- `ELECTRICITY_MAPS_API_TOKEN` — Electricity Maps API token.
-- `ELECTRICITY_MAPS_ZONE` — Electricity zone (defaults to `IN-SO`).
+- `ELECTRICITY_MAPS_API_TOKEN` — Your Electricity Maps API token.
+- `ELECTRICITY_MAPS_ZONE` — The electricity zone to query. Defaults to `IN-SO`.
 
-## Run
+For Git Bash on Windows:
+
+```bash
+export ELECTRICITY_MAPS_API_TOKEN="your_api_token"
+export ELECTRICITY_MAPS_ZONE="IN-SO"
+```
+
+Replace `your_api_token` with your actual token. Never commit your API token to GitHub.
+
+## Run the Adapter
+
+From the `carbon-adapter` directory:
 
 ```bash
 go run .
 ```
 
-## Tests
+The adapter prints a normalized JSON signal containing the signal type, provider, region, carbon intensity, unit, timestamp, validity, forecast status, and quality.
+
+## Run Tests
+
+Run all unit tests using:
 
 ```bash
 go test -v ./...
 ```
 
+The following 10 unit tests are implemented:
+
+1. `TestFetchCarbonIntensitySuccess` — Successful API response.
+2. `TestFetchCarbonIntensityHTTPError` — HTTP error response.
+3. `TestFetchCarbonIntensityMissingValue` — Missing carbon intensity.
+4. `TestFetchCarbonIntensityNegativeValue` — Negative carbon intensity.
+5. `TestFetchCarbonIntensityMissingTimestamp` — Missing timestamp.
+6. `TestFetchCarbonIntensityInvalidJSON` — Invalid JSON response.
+7. `TestFetchCarbonIntensityMissingZone` — Missing zone.
+8. `TestFetchCarbonIntensityMissingGranularity` — Missing temporal granularity.
+9. `TestFetchCarbonIntensityZeroTimestamp` — Zero timestamp.
+10. `TestFetchCarbonIntensityMissingToken` — Missing API token.
+
+All 10 tests passed in the latest test run.
+
 ## Future Issues
 
 - Add support for carbon-intensity forecasts.
-- Integrate with the Generic Signal Handler.
-- Improve handling of stale data and coordinate caching/fallback with the handler.
-- Add further validation and integration tests as the interface is finalized.
+- Integrate the adapter with the Generic Signal Handler.
+- Coordinate caching, stale-data handling, and fallback behavior with the handler.
+- Add integration tests after the shared interface is finalized.
