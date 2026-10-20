@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/joho/godotenv"
 	"io"
 	"math"
 	"net/http"
@@ -165,6 +166,8 @@ func fetchCostSignal(
 }
 
 func main() {
+	_ = godotenv.Load()
+
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
