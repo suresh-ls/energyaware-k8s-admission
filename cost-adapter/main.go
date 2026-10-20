@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/joho/godotenv"
 	"io"
 	"math"
 	"net/http"
@@ -12,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -128,10 +129,6 @@ func fetchCostSignal(
 	if record.Timestamp.IsZero() {
 		return nil, fmt.Errorf("API response is missing timestamp")
 	}
-	if record.Timestamp.After(time.Now().Add(5 * time.Minute)) {
-		return nil, fmt.Errorf("API response timestamp is in the future")
-	}
-
 	price, err := strconv.ParseFloat(record.Price, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid electricity price %q: %w", record.Price, err)
@@ -143,8 +140,8 @@ func fetchCostSignal(
 	// 1 MWh = 1000 kWh.
 	pricePerKWh := price / 1000.0
 
-	// Provisional expiry: one 15-minute delivery block after
-	// the source timestamp. Confirm this policy with Workstream E.
+	// The source timestamp identifies the market delivery block.
+	// Provisional expiry: one 15-minute delivery block after the timestamp.
 	validUntil := record.Timestamp.Add(15 * time.Minute)
 
 	quality := "reported"
