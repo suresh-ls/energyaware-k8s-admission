@@ -292,3 +292,82 @@ func TestHandlerConcurrentGetSignal(t *testing.T) {
 		t.Errorf("concurrent GetSignal failed: %v", err)
 	}
 }
+
+type signalMapProvider struct {
+	signals map[string]Signal
+	errors  map[string]error
+	calls   map[string]int
+}
+
+func (p *signalMapProvider) GetCurrentSignal(_ context.Context, request SignalRequest) (Signal, error) {
+	if p.calls == nil {
+		p.calls = make(map[string]int)
+	}
+	p.calls[request.SignalType]++
+	if err := p.errors[request.SignalType]; err != nil {
+		return Signal{}, err
+	}
+	signal, ok := p.signals[request.SignalType]
+	if !ok {
+		return Signal{}, fmt.Errorf("no test signal for %q", request.SignalType)
+	}
+	return signal, nil
+}
+
+func TestHandlerGetSignalsReturnsAllThreeSignals(t *testing.T) {
+	carbon := validTestSignal()
+	cost := validTestSignal()
+	cost.SignalType, cost.Value, cost.Unit = SignalTypeCost, 8.5, "INR/kWh"
+	demand := validTestSignal()
+	demand.SignalType, demand.Value, demand.Unit = SignalTypeDemandCap, 100, "kW"
+	provider := &signalMapProvider{signals: map[string]Signal{
+		SignalTypeCarbon: carbon, SignalTypeCost: cost, SignalTypeDemandCap: demand,
+	}}
+	handler := NewHandler(provider)
+
+	got, err := handler.GetSignals(context.Background(), "in-so")
+	if err != nil {
+		t.Fatalf("GetSignals returned error: %v", err)
+	}
+	if got.Carbon.SignalType != SignalTypeCarbon || got.Carbon.Value != carbon.Value {
+		t.Errorf("unexpected carbon signal: %+v", got.Carbon)
+	}
+	if got.Cost.SignalType != SignalTypeCost || got.Cost.Value != cost.Value {
+		t.Errorf("unexpected cost signal: %+v", got.Cost)
+	}
+	if got.DemandCap.SignalType != SignalTypeDemandCap || got.DemandCap.Value != demand.Value {
+		t.Errorf("unexpected demand-cap signal: %+v", got.DemandCap)
+	}
+	if len(provider.calls) != 3 {
+		t.Errorf("expected all three provider calls, got %d", len(provider.calls))
+	}
+}
+
+func TestHandlerGetSignalsFailsWithoutReturningPartialSet(t *testing.T) {
+	carbon := validTestSignal()
+	cost := validTestSignal()
+	cost.SignalType = SignalTypeCost
+	demand := validTestSignal()
+	demand.SignalType = SignalTypeDemandCap
+	expectedErr := errors.New("cost provider unavailable")
+	provider := &signalMapProvider{
+		signals: map[string]Signal{SignalTypeCarbon: carbon, SignalTypeDemandCap: demand},
+		errors:  map[string]error{SignalTypeCost: expectedErr},
+	}
+	got, err := NewHandler(provider).GetSignals(context.Background(), "IN-SO")
+	if err == nil {
+		t.Fatal("expected combined retrieval to fail")
+	}
+	if !errors.Is(err, expectedErr) {
+		t.Fatalf("expected wrapped provider error, got %v", err)
+	}
+	if got != (SignalSet{}) {
+		t.Fatalf("expected empty result on partial failure, got %+v", got)
+	}
+}
+
+func TestHandlerGetSignalsRejectsEmptyRegion(t *testing.T) {
+	if _, err := NewHandler(&signalMapProvider{}).GetSignals(context.Background(), "  "); err == nil {
+		t.Fatal("expected empty region to be rejected")
+	}
+}

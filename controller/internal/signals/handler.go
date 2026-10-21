@@ -83,3 +83,43 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 	h.mu.Unlock()
 	return signal, nil
 }
+
+// GetSignals retrieves the carbon, cost, and demand-cap signals for a region.
+// It reuses GetSignal so each result goes through the existing validation and cache.
+// If any retrieval fails, it returns an empty SignalSet and the error.
+func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, error) {
+	if h == nil {
+		return SignalSet{}, fmt.Errorf("signal handler is nil")
+	}
+	region = strings.ToUpper(strings.TrimSpace(region))
+	if region == "" {
+		return SignalSet{}, fmt.Errorf("requested signal region is required")
+	}
+
+	requests := []struct {
+		name        string
+		typeName    string
+		destination *Signal
+	}{
+		{name: "carbon", typeName: SignalTypeCarbon},
+		{name: "cost", typeName: SignalTypeCost},
+		{name: "demand-cap", typeName: SignalTypeDemandCap},
+	}
+
+	var result SignalSet
+	for _, item := range requests {
+		signal, err := h.GetSignal(ctx, SignalRequest{SignalType: item.typeName, Region: region})
+		if err != nil {
+			return SignalSet{}, fmt.Errorf("get %s signal: %w", item.name, err)
+		}
+		switch item.typeName {
+		case SignalTypeCarbon:
+			result.Carbon = signal
+		case SignalTypeCost:
+			result.Cost = signal
+		case SignalTypeDemandCap:
+			result.DemandCap = signal
+		}
+	}
+	return result, nil
+}
