@@ -1,4 +1,3 @@
-
 package signals
 
 import "time"
@@ -9,7 +8,7 @@ type SignalRequest struct {
 	Region     string
 }
 
-// Signal represents a normalized signal from a provider.
+// Signal represents a normalized signal returned by a provider.
 type Signal struct {
 	SignalType string    `json:"signal_type"`
 	Provider   string    `json:"provider"`
