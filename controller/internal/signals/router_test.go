@@ -30,7 +30,10 @@ func TestProviderRouterRoutesBySignalType(t *testing.T) {
 	costSignal.Unit = "INR/kWh"
 	carbonProvider := &routerTestProvider{signal: carbonSignal}
 	costProvider := &routerTestProvider{signal: costSignal}
-	router := NewProviderRouter(map[string]SignalProvider{"carbon": carbonProvider, "cost": costProvider})
+	router, err := NewProviderRouter(map[string]SignalProvider{"carbon": carbonProvider, "cost": costProvider})
+	if err != nil {
+		t.Fatalf("NewProviderRouter: %v", err)
+	}
 
 	gotCarbon, err := router.GetCurrentSignal(context.Background(), SignalRequest{SignalType: "carbon", Region: "IN-SO"})
 	if err != nil {
@@ -60,7 +63,10 @@ func TestProviderRouterRoutesBySignalType(t *testing.T) {
 
 func TestProviderRouterNormalizesSignalType(t *testing.T) {
 	provider := &routerTestProvider{signal: validTestSignal()}
-	router := NewProviderRouter(map[string]SignalProvider{" CARBON ": provider})
+	router, err := NewProviderRouter(map[string]SignalProvider{" CARBON ": provider})
+	if err != nil {
+		t.Fatalf("NewProviderRouter: %v", err)
+	}
 	if _, err := router.GetCurrentSignal(context.Background(), SignalRequest{SignalType: "CARBON", Region: "IN-SO"}); err != nil {
 		t.Fatalf("expected normalized signal type to route successfully: %v", err)
 	}
@@ -70,24 +76,30 @@ func TestProviderRouterNormalizesSignalType(t *testing.T) {
 }
 
 func TestProviderRouterUnknownSignalType(t *testing.T) {
-	router := NewProviderRouter(map[string]SignalProvider{"carbon": &routerTestProvider{signal: validTestSignal()}})
+	router, err := NewProviderRouter(map[string]SignalProvider{"carbon": &routerTestProvider{signal: validTestSignal()}})
+	if err != nil {
+		t.Fatalf("NewProviderRouter: %v", err)
+	}
 	if _, err := router.GetCurrentSignal(context.Background(), SignalRequest{SignalType: "demand", Region: "IN-SO"}); err == nil {
 		t.Fatal("expected an error for an unregistered signal type")
 	}
 }
 
 func TestProviderRouterNilRegisteredProvider(t *testing.T) {
-	router := NewProviderRouter(map[string]SignalProvider{"carbon": nil})
-	if _, err := router.GetCurrentSignal(context.Background(), SignalRequest{SignalType: "carbon", Region: "IN-SO"}); err == nil {
-		t.Fatal("expected an error for a nil provider")
+	_, err := NewProviderRouter(map[string]SignalProvider{"carbon": nil})
+	if err == nil {
+		t.Fatal("expected nil provider registration to be rejected")
 	}
 }
 
 func TestProviderRouterPropagatesProviderError(t *testing.T) {
 	expectedErr := errors.New("upstream provider unavailable")
 	provider := &routerTestProvider{err: expectedErr}
-	router := NewProviderRouter(map[string]SignalProvider{"carbon": provider})
-	_, err := router.GetCurrentSignal(context.Background(), SignalRequest{SignalType: "carbon", Region: "IN-SO"})
+	router, err := NewProviderRouter(map[string]SignalProvider{"carbon": provider})
+	if err != nil {
+		t.Fatalf("NewProviderRouter: %v", err)
+	}
+	_, err = router.GetCurrentSignal(context.Background(), SignalRequest{SignalType: "carbon", Region: "IN-SO"})
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected provider error %v, got %v", expectedErr, err)
 	}
@@ -95,7 +107,10 @@ func TestProviderRouterPropagatesProviderError(t *testing.T) {
 
 func TestProviderRouterRejectsCancelledContext(t *testing.T) {
 	provider := &routerTestProvider{signal: validTestSignal()}
-	router := NewProviderRouter(map[string]SignalProvider{"carbon": provider})
+	router, err := NewProviderRouter(map[string]SignalProvider{"carbon": provider})
+	if err != nil {
+		t.Fatalf("NewProviderRouter: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := router.GetCurrentSignal(ctx, SignalRequest{SignalType: "carbon", Region: "IN-SO"}); !errors.Is(err, context.Canceled) {
@@ -103,5 +118,17 @@ func TestProviderRouterRejectsCancelledContext(t *testing.T) {
 	}
 	if provider.calls != 0 {
 		t.Errorf("provider should not be called for cancelled context")
+	}
+}
+
+func TestProviderRouterRejectsDuplicateNormalizedKeys(t *testing.T) {
+	first := &routerTestProvider{signal: validTestSignal()}
+	second := &routerTestProvider{signal: validTestSignal()}
+	_, err := NewProviderRouter(map[string]SignalProvider{
+		"carbon":   first,
+		" CARBON ": second,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate normalized keys to be rejected")
 	}
 }

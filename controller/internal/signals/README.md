@@ -1,30 +1,29 @@
-# Generic Signal Handler
+# Updated Generic Signal Handler
 
-This package defines the shared signal contract, validates provider responses, routes requests by signal type, and caches valid signals by normalized signal type and region.
+## Included files
+- `signal.go`: shared signal and signal-set structures.
+- `provider.go`: current-signal contract plus optional forecast capability.
+- `handler.go`: cache, validation orchestration, combined signal retrieval, and forecast retrieval.
+- `router.go`: normalized routing, duplicate-key rejection, and optional forecast routing.
+- `validator.go`: shared signal validation and freshness rules.
+- `handler_test.go`, `router_test.go`: unit tests for the changes.
 
-## Files
-- `signal.go`: request and signal structures.
-- `provider.go`: `SignalProvider` interface.
-- `validator.go`: validation rules.
-- `handler.go`: request normalization, individual and combined three-signal retrieval, provider validation, and cache.
-- `router.go`: provider routing.
-- `handler_test.go`, `router_test.go`: unit tests.
+## Important integration notes
+1. `NewProviderRouter` now returns `(*ProviderRouter, error)`. Update call sites:
+   `router, err := signals.NewProviderRouter(providers)`.
+2. Forecast support is an optional interface:
+   `GetForecastSignals(ctx, request, horizon) ([]Signal, error)`.
+   A carbon adapter must implement it to supply the 24-hour forecast. The adapter implementation was not included in the uploaded files, so forecast API integration is not implemented or verified here.
+3. Demand signals are normalized from `signal_type: "demand"` to the shared `demand_cap` type. Demand provider results must preserve `Cap`, `Utilization`, and `Status`; the handler rejects demand signals with a non-positive cap, invalid utilization, or empty status.
+4. `Timestamp` remains the source observation/market-period timestamp. `CollectedAt` records retrieval time. Cost adapters should set `CollectedAt` so the max-age policy checks freshness without rejecting future market delivery timestamps.
+5. The default maximum signal age is one hour. Configure per-type limits using `NewHandlerWithOptions`.
+6. Quality values are currently required to be non-empty, but are not checked against a fixed vocabulary. The team must agree on the allowed values before enforcement is safe.
+7. Forecast entries are not cached in this version; forecast-specific cache semantics should be agreed before adding that behavior.
+8. This package cannot verify external adapter integration because only the generic signal-handler files and their tests were provided.
 
-## Test
-From the existing `controller` module root, run:
+## Verification
+Tested with:
+- `go test ./...`
+- `go test -race ./...`
 
-```powershell
-go test -count=1 ./internal/signals/...
-go test -race -count=1 ./internal/signals/...
-```
-
-This package does not execute or communicate with adapter programs itself. A concrete `SignalProvider` implementation must connect this interface to the team's chosen adapter transport.
-
-## Concurrency
-The cache is safe for concurrent access. Simultaneous cache misses can still trigger multiple provider calls for the same key; preventing that would require per-key in-flight request coordination and is an optional optimization.
-
-## Combined retrieval
-
-`Handler.GetSignals(ctx, region)` retrieves `carbon`, `cost`, and `demand_cap` and returns a `SignalSet`. It uses `GetSignal` for each request, so validation and caching remain centralized. The method is all-or-nothing: if any signal retrieval fails, it returns an empty set and an error. The registered providers must use the signal type keys `carbon`, `cost`, and `demand_cap`.
-
-The demand-cap value's precise meaning and unit must be agreed by the provider and controller/engine contract; this package only validates generic scalar signal metadata and does not infer whether a value is a limit or a measured demand.
+Both passed for the included package.

@@ -320,6 +320,7 @@ func TestHandlerGetSignalsReturnsAllThreeSignals(t *testing.T) {
 	cost.SignalType, cost.Value, cost.Unit = SignalTypeCost, 8.5, "INR/kWh"
 	demand := validTestSignal()
 	demand.SignalType, demand.Value, demand.Unit = SignalTypeDemandCap, 100, "kW"
+	demand.Cap, demand.Utilization, demand.Status = 120, 100.0/120.0, "WITHIN_CAP"
 	provider := &signalMapProvider{signals: map[string]Signal{
 		SignalTypeCarbon: carbon, SignalTypeCost: cost, SignalTypeDemandCap: demand,
 	}}
@@ -349,6 +350,7 @@ func TestHandlerGetSignalsFailsWithoutReturningPartialSet(t *testing.T) {
 	cost.SignalType = SignalTypeCost
 	demand := validTestSignal()
 	demand.SignalType = SignalTypeDemandCap
+	demand.Cap, demand.Utilization, demand.Status = 120, 0.5, "WITHIN_CAP"
 	expectedErr := errors.New("cost provider unavailable")
 	provider := &signalMapProvider{
 		signals: map[string]Signal{SignalTypeCarbon: carbon, SignalTypeDemandCap: demand},
@@ -369,5 +371,72 @@ func TestHandlerGetSignalsFailsWithoutReturningPartialSet(t *testing.T) {
 func TestHandlerGetSignalsRejectsEmptyRegion(t *testing.T) {
 	if _, err := NewHandler(&signalMapProvider{}).GetSignals(context.Background(), "  "); err == nil {
 		t.Fatal("expected empty region to be rejected")
+	}
+}
+
+type blockingProvider struct {
+	started chan struct{}
+}
+
+func (p *blockingProvider) GetCurrentSignal(ctx context.Context, _ SignalRequest) (Signal, error) {
+	close(p.started)
+	select {
+	case <-ctx.Done():
+		return Signal{}, ctx.Err()
+	case <-time.After(5 * time.Second):
+		return validTestSignal(), nil
+	}
+}
+
+func TestHandlerCancellationDuringProviderCall(t *testing.T) {
+	provider := &blockingProvider{started: make(chan struct{})}
+	handler := NewHandler(provider)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+
+	go func() {
+		_, err := handler.GetSignal(ctx, carbonRequest())
+		result <- err
+	}()
+
+	<-provider.started
+	cancel()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler did not stop promptly after context cancellation")
+	}
+}
+
+func TestHandlerRejectsSignalOlderThanMaxAge(t *testing.T) {
+	signal := validTestSignal()
+	signal.Timestamp = time.Now().Add(-2 * time.Hour)
+	signal.ValidUntil = time.Now().Add(time.Hour)
+	handler := NewHandlerWithOptions(
+		mockProvider{signal: signal},
+		HandlerOptions{DefaultMaxSignalAge: 30 * time.Minute},
+	)
+	if _, err := handler.GetSignal(context.Background(), carbonRequest()); err == nil {
+		t.Fatal("expected signal older than maximum age to be rejected")
+	}
+}
+
+func TestHandlerAllowsFutureMarketTimestamp(t *testing.T) {
+	signal := validTestSignal()
+	signal.SignalType = SignalTypeCost
+	signal.Timestamp = time.Now().Add(24 * time.Hour)
+	signal.ValidUntil = time.Now().Add(time.Hour)
+	signal.CollectedAt = time.Now()
+	signal.Unit = "INR/kWh"
+	_, err := NewHandler(&mockProvider{signal: signal}).GetSignal(context.Background(), SignalRequest{
+		SignalType: SignalTypeCost,
+		Region:     "IN-SO",
+	})
+	if err != nil {
+		t.Fatalf("future market timestamp should be allowed: %v", err)
 	}
 }
