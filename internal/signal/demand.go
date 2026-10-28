@@ -52,7 +52,11 @@ type DemandSignal struct {
 	Status      DemandStatus `json:"status"`
 	Timestamp   time.Time    `json:"timestamp"`
 	ValidUntil  time.Time    `json:"valid_until"`
-	Quality     Quality      `json:"quality"`
+	// CachedAt is when the signal was stored in the cache (design doc 4.5.3).
+	// It is zero for a signal that has not passed through a cache. The cache
+	// TTL is measured from CachedAt. Needs Go 1.24+ for omitzero.
+	CachedAt time.Time `json:"cached_at,omitzero"`
+	Quality  Quality   `json:"quality"`
 }
 
 // utilizationTolerance allows for floating point rounding when checking that
@@ -88,6 +92,9 @@ func (s DemandSignal) Validate() error {
 	}
 	if !s.ValidUntil.After(s.Timestamp) {
 		return errors.New("valid_until must be after timestamp")
+	}
+	if !s.CachedAt.IsZero() && s.CachedAt.Before(s.Timestamp) {
+		return errors.New("cached_at must not be before timestamp")
 	}
 	switch s.Quality {
 	case QualityFresh, QualityCached, QualityStale:

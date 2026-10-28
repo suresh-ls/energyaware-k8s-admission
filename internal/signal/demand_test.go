@@ -49,6 +49,16 @@ func TestValidate(t *testing.T) {
 			s.Quality = QualityStale
 		}, ""},
 
+		{"cached_at after timestamp is fine", func(s *DemandSignal) {
+			s.CachedAt = t0.Add(time.Second)
+		}, ""},
+		{"cached_at equal to timestamp is fine", func(s *DemandSignal) {
+			s.CachedAt = t0
+		}, ""},
+		{"cached_at before timestamp", func(s *DemandSignal) {
+			s.CachedAt = t0.Add(-time.Second)
+		}, "cached_at"},
+
 		{"wrong signal type", func(s *DemandSignal) { s.SignalType = "carbon" }, "signal_type"},
 		{"missing provider", func(s *DemandSignal) { s.Provider = "" }, "provider"},
 		{"unsupported unit", func(s *DemandSignal) { s.Unit = "MW" }, "unit"},
