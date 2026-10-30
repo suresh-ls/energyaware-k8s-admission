@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go build and test artifacts
+*.test
+*.out
+go.work
+
+# Local Kubernetes configuration
+*.kubeconfig
+
+# Generated coverage output
+cover.out
+
+# macOS metadata anywhere in the repository
+.DS_Store
+**/.DS_Store
