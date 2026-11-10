@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: energygate-test-job
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: energygate-local-queue
+spec:
+  suspend: true
+  parallelism: 1
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app: energygate-test
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: busybox:1.36
+          command: ["sh", "-c", "echo EnergyGate test job ran; sleep 10"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
