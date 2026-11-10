@@ -160,3 +160,13 @@ func TestJSONRoundTrip(t *testing.T) {
 		t.Errorf("timestamp changed: %v", got.Timestamp)
 	}
 }
+
+func TestRejectNonFiniteUtilization(t *testing.T) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		s := valid()
+		s.Utilization = value
+		if err := s.Validate(); err == nil {
+			t.Fatalf("accepted utilization %v", value)
+		}
+	}
+}

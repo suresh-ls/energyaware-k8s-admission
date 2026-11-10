@@ -106,7 +106,7 @@ func (s DemandSignal) Validate() error {
 	default:
 		return fmt.Errorf("invalid status %q", s.Status)
 	}
-	if math.Abs(s.Utilization-s.Value/s.Cap) > utilizationTolerance {
+	if isBad(s.Utilization) || isBad(s.Value/s.Cap) || math.Abs(s.Utilization-s.Value/s.Cap) > utilizationTolerance {
 		return fmt.Errorf("utilization %v does not match value/cap %v", s.Utilization, s.Value/s.Cap)
 	}
 	wantExceeded := s.Value > s.Cap

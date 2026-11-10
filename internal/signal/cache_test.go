@@ -66,7 +66,7 @@ func measured(value float64, at time.Time) DemandSignal {
 		s.Status = StatusExceeded
 	}
 	s.Timestamp = at
-	s.ValidUntil = at.Add(time.Minute)
+	s.ValidUntil = at.Add(2 * time.Hour)
 	return s
 }
 
@@ -395,6 +395,7 @@ func TestOnProviderErrorCalled(t *testing.T) {
 func TestOlderResponseDoesNotReplaceNewerCacheEntry(t *testing.T) {
 	f := newFixture(t, nil)
 
+	f.clock.advance(10 * time.Second)
 	newer := measured(8, t0.Add(10*time.Second))
 	older := measured(2, t0)
 
@@ -470,4 +471,20 @@ func TestConcurrentUse(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestExpiryOverridesCacheMaxAge(t *testing.T) {
+	f := newFixture(t, nil)
+	s := measured(7.5, f.clock.now())
+	s.ValidUntil = s.Timestamp.Add(time.Minute)
+	f.inner.set(s, nil)
+	if _, err := f.get(); err != nil {
+		t.Fatal(err)
+	}
+	f.fail()
+	f.clock.advance(time.Minute)
+	got, err := f.get()
+	if err != nil || got.Quality != QualityStale || got.IsUsable() {
+		t.Fatalf("expired signal treated as usable: %+v, %v", got, err)
+	}
 }

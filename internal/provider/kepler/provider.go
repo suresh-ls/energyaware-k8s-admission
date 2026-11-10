@@ -148,7 +148,7 @@ func (p *Provider) Validate(sig signal.DemandSignal) error {
 // the cap and returns a FRESH DemandSignal. It never returns a cached value;
 // caching and stale handling are layered on top of the provider.
 func (p *Provider) GetCurrentSignal(ctx context.Context) (signal.DemandSignal, error) {
-	watts, err := p.queryWatts(ctx)
+	watts, observed, err := p.queryWatts(ctx)
 	if err != nil {
 		return signal.DemandSignal{}, err
 	}
@@ -164,6 +164,9 @@ func (p *Provider) GetCurrentSignal(ctx context.Context) (signal.DemandSignal, e
 	}
 
 	now := p.now()
+	if observed.After(now) || !now.Before(observed.Add(p.cfg.ValidFor)) {
+		return signal.DemandSignal{}, fmt.Errorf("%w: source sample expired or in the future", ErrMalformedResponse)
+	}
 	sig := signal.DemandSignal{
 		SignalType:  signal.SignalTypeDemand,
 		Provider:    ProviderName,
@@ -172,8 +175,8 @@ func (p *Provider) GetCurrentSignal(ctx context.Context) (signal.DemandSignal, e
 		Cap:         ev.Cap,
 		Utilization: ev.Utilization,
 		Status:      ev.Status,
-		Timestamp:   now,
-		ValidUntil:  now.Add(p.cfg.ValidFor),
+		Timestamp:   observed,
+		ValidUntil:  observed.Add(p.cfg.ValidFor),
 		Quality:     signal.QualityFresh,
 	}
 	if err := p.Validate(sig); err != nil {
@@ -224,7 +227,7 @@ type promResponse struct {
 }
 
 // queryWatts runs the configured query and returns the single resulting value.
-func (p *Provider) queryWatts(ctx context.Context) (float64, error) {
+func (p *Provider) queryWatts(ctx context.Context) (float64, time.Time, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.Timeout)
 	defer cancel()
 
@@ -233,55 +236,61 @@ func (p *Provider) queryWatts(ctx context.Context) (float64, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
+		return 0, time.Time{}, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrPrometheusUnavailable, err)
+		return 0, time.Time{}, fmt.Errorf("%w: %v", ErrPrometheusUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		return 0, fmt.Errorf("%w: reading body: %v", ErrPrometheusUnavailable, err)
+		return 0, time.Time{}, fmt.Errorf("%w: reading body: %v", ErrPrometheusUnavailable, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("%w: HTTP %d: %s", ErrPrometheusUnavailable, resp.StatusCode, snippet(body))
+		return 0, time.Time{}, fmt.Errorf("%w: HTTP %d: %s", ErrPrometheusUnavailable, resp.StatusCode, snippet(body))
 	}
 
 	var pr promResponse
 	if err := json.Unmarshal(body, &pr); err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrMalformedResponse, err)
+		return 0, time.Time{}, fmt.Errorf("%w: %v", ErrMalformedResponse, err)
 	}
 	if pr.Status != "success" {
-		return 0, fmt.Errorf("%w: status %q: %s %s", ErrMalformedResponse, pr.Status, pr.ErrorType, pr.Error)
+		return 0, time.Time{}, fmt.Errorf("%w: status %q: %s %s", ErrMalformedResponse, pr.Status, pr.ErrorType, pr.Error)
 	}
 	if pr.Data.ResultType != "vector" {
-		return 0, fmt.Errorf("%w: result type %q, want vector", ErrMalformedResponse, pr.Data.ResultType)
+		return 0, time.Time{}, fmt.Errorf("%w: result type %q, want vector", ErrMalformedResponse, pr.Data.ResultType)
 	}
 
 	switch len(pr.Data.Result) {
 	case 0:
-		return 0, fmt.Errorf("%w (query: %s)", ErrNoData, p.cfg.Query)
+		return 0, time.Time{}, fmt.Errorf("%w (query: %s)", ErrNoData, p.cfg.Query)
 	case 1:
 	default:
-		return 0, fmt.Errorf("%w: got %d (query: %s)", ErrMultipleSeries, len(pr.Data.Result), p.cfg.Query)
+		return 0, time.Time{}, fmt.Errorf("%w: got %d (query: %s)", ErrMultipleSeries, len(pr.Data.Result), p.cfg.Query)
 	}
 
 	// A vector sample value is [<unix timestamp>, "<value as string>"].
 	v := pr.Data.Result[0].Value
 	if len(v) != 2 {
-		return 0, fmt.Errorf("%w: sample has %d elements, want 2", ErrMalformedResponse, len(v))
+		return 0, time.Time{}, fmt.Errorf("%w: sample has %d elements, want 2", ErrMalformedResponse, len(v))
 	}
+	var seconds float64
+	if err := json.Unmarshal(v[0], &seconds); err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 || seconds > 1e12 {
+		return 0, time.Time{}, fmt.Errorf("%w: invalid source timestamp", ErrMalformedResponse)
+	}
+	whole, fraction := math.Modf(seconds)
+	observed := time.Unix(int64(whole), int64(fraction*1e9)).UTC()
 	var raw string
 	if err := json.Unmarshal(v[1], &raw); err != nil {
-		return 0, fmt.Errorf("%w: sample value is not a string: %v", ErrMalformedResponse, err)
+		return 0, time.Time{}, fmt.Errorf("%w: sample value is not a string: %v", ErrMalformedResponse, err)
 	}
 	f, err := strconv.ParseFloat(raw, 64)
 	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
-		return 0, fmt.Errorf("%w: sample value %q is not a finite number", ErrMalformedResponse, raw)
+		return 0, time.Time{}, fmt.Errorf("%w: sample value %q is not a finite number", ErrMalformedResponse, raw)
 	}
-	return f, nil
+	return f, observed, nil
 }
 
 func snippet(b []byte) string {

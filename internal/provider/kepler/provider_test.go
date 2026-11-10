@@ -21,7 +21,7 @@ func vectorBody(values ...string) string {
 	var results []string
 	for i, v := range values {
 		results = append(results,
-			fmt.Sprintf(`{"metric":{"n":"%d"},"value":[1760000000.123,%q]}`, i, v))
+			fmt.Sprintf(`{"metric":{"n":"%d"},"value":[%d,%q]}`, i, fixedNow.Unix(), v))
 	}
 	return fmt.Sprintf(`{"status":"success","data":{"resultType":"vector","result":[%s]}}`,
 		strings.Join(results, ","))

@@ -17,14 +17,14 @@ var (
 	// in the cache to fall back on (for example right after startup).
 	ErrNoSignal = errors.New("no usable signal: provider failed and nothing is cached")
 	// ErrSignalStale is returned by the FailClosed policy when the provider
-	// failed and the cached value is older than the maximum cache age.
-	ErrSignalStale = errors.New("cached signal is older than the maximum cache age")
+	// failed and the cached value expired or exceeded the maximum cache age.
+	ErrSignalStale = errors.New("cached signal expired or exceeded the maximum cache age")
 )
 
 // FallbackFunc is the configured fallback policy of design doc 4.5.3. It runs
 // when the provider failed AND the cache cannot serve the request, that is
 // when the cache is empty (stale == nil) or its entry is older than the
-// maximum age (stale != nil, already marked QualityStale). cause is the
+// maximum age or expired (stale != nil, already marked QualityStale). cause is the
 // provider error.
 type FallbackFunc func(providerName string, stale *DemandSignal, cause error) (DemandSignal, error)
 
@@ -57,7 +57,7 @@ func noSignal(providerName string, cause error) error {
 // CacheConfig configures a CachedProvider.
 type CacheConfig struct {
 	// MaxAge is how long after the last successful fetch (CachedAt) a cached
-	// value may still be served as QualityCached. Default: 1 hour.
+	// value may still be served as QualityCached, bounded by ValidUntil. Default: 1 hour.
 	MaxAge time.Duration
 	// Fallback runs when the cache cannot serve a usable value. Default:
 	// ReturnStale.
@@ -78,7 +78,7 @@ type CacheConfig struct {
 //	response = provider.getCurrentSignal()
 //	valid           -> store in cache, quality FRESH, return it
 //	failed:
-//	  cache within MaxAge -> quality CACHED, return cached value
+//	  cache within MaxAge and ValidUntil -> quality CACHED, return cached value
 //	  otherwise           -> quality STALE, apply the fallback policy
 //
 // The provider is called on every request; the cache only serves as a
@@ -117,9 +117,21 @@ func NewCachedProvider(inner SignalProvider[DemandSignal], cfg CacheConfig) (*Ca
 // GetCurrentSignal returns a FRESH signal from the provider, or falls back to
 // the cache as described on CachedProvider.
 func (c *CachedProvider) GetCurrentSignal(ctx context.Context) (DemandSignal, error) {
+	if ctx == nil {
+		return DemandSignal{}, errors.New("context required")
+	}
+	if err := ctx.Err(); err != nil {
+		return DemandSignal{}, err
+	}
 	sig, err := c.inner.GetCurrentSignal(ctx)
+	if err := ctx.Err(); err != nil {
+		return DemandSignal{}, err
+	}
 	if err == nil {
 		err = c.inner.Validate(sig)
+	}
+	if err == nil && (sig.Timestamp.After(c.cfg.Now()) || !c.cfg.Now().Before(sig.ValidUntil)) {
+		err = ErrSignalStale
 	}
 	if err == nil {
 		return c.store(sig), nil
@@ -138,7 +150,7 @@ func (c *CachedProvider) GetCurrentSignal(ctx context.Context) (DemandSignal, er
 	c.mu.Unlock()
 
 	if last != nil {
-		if c.cfg.Now().Sub(last.CachedAt) <= c.cfg.MaxAge {
+		if c.cfg.Now().Sub(last.CachedAt) <= c.cfg.MaxAge && c.cfg.Now().Before(last.ValidUntil) {
 			last.Quality = QualityCached
 			return *last, nil
 		}

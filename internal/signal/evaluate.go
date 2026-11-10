@@ -44,6 +44,10 @@ func EvaluateDemand(currentDemand, demandCap float64) (DemandEvaluation, error) 
 		return DemandEvaluation{}, fmt.Errorf("%w: got %v", ErrInvalidDemand, currentDemand)
 	}
 
+	if isBad(currentDemand / demandCap) {
+		return DemandEvaluation{}, fmt.Errorf("%w: utilization overflow", ErrInvalidDemand)
+	}
+
 	status := StatusWithinCap
 	if currentDemand > demandCap {
 		status = StatusExceeded
