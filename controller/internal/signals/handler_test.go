@@ -472,3 +472,153 @@ func TestDemandContractValidation(t *testing.T) {
 		}
 	}
 }
+
+type forecastTestProvider struct {
+	forecasts []Signal
+	err       error
+}
+
+func (p *forecastTestProvider) GetCurrentSignal(_ context.Context, _ SignalRequest) (Signal, error) {
+	return Signal{}, fmt.Errorf("current signal not implemented for forecast test provider")
+}
+
+func (p *forecastTestProvider) GetForecastSignals(_ context.Context, _ SignalRequest, _ time.Duration) ([]Signal, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return p.forecasts, nil
+}
+
+func TestHandlerGetForecastSignalsValidForecast(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	provider := &forecastTestProvider{
+		forecasts: []Signal{
+			{
+				SignalType:  SignalTypeCost,
+				Provider:    "EnergyMap-IEX",
+				Region:      RegionAllIndia,
+				Value:       5.555,
+				Unit:        "INR/kWh",
+				Timestamp:   now.Add(24 * time.Hour),
+				CollectedAt: now,
+				ValidUntil:  now.Add(24 * time.Hour),
+				IsForecast:  true,
+				Quality:     "forecast",
+			},
+		},
+	}
+
+	handler := NewHandlerWithOptions(provider, HandlerOptions{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	got, err := handler.GetForecastSignals(
+		context.Background(),
+		SignalRequest{
+			SignalType: SignalTypeCost,
+			Region:     "All India",
+		},
+		24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GetForecastSignals returned error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 forecast, got %d", len(got))
+	}
+
+	if got[0].SignalType != SignalTypeCost {
+		t.Errorf("expected signal type %q, got %q", SignalTypeCost, got[0].SignalType)
+	}
+	if got[0].Region != RegionAllIndia {
+		t.Errorf("expected region %q, got %q", RegionAllIndia, got[0].Region)
+	}
+	if got[0].Value != 5.555 {
+		t.Errorf("expected forecast value 5.555, got %f", got[0].Value)
+	}
+	if !got[0].IsForecast {
+		t.Error("expected forecast signal to be marked as forecast")
+	}
+}
+
+func TestHandlerGetForecastSignalsAcceptsAllIndiaForecast(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	provider := &forecastTestProvider{
+		forecasts: []Signal{
+			{
+				SignalType:  SignalTypeCost,
+				Provider:    "EnergyMap-IEX",
+				Region:      RegionAllIndia,
+				Value:       5.5,
+				Unit:        "INR/kWh",
+				Timestamp:   now.Add(24 * time.Hour),
+				CollectedAt: now,
+				ValidUntil:  now.Add(24 * time.Hour),
+				IsForecast:  true,
+				Quality:     "forecast",
+			},
+		},
+	}
+
+	handler := NewHandlerWithOptions(provider, HandlerOptions{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	_, err := handler.GetForecastSignals(
+		context.Background(),
+		SignalRequest{
+			SignalType: SignalTypeCost,
+			Region:     "ALL INDIA",
+		},
+		24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("expected ALL INDIA forecast to be accepted: %v", err)
+	}
+}
+
+func TestHandlerGetForecastSignalsRejectsUnrelatedRegion(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	provider := &forecastTestProvider{
+		forecasts: []Signal{
+			{
+				SignalType:  SignalTypeCost,
+				Provider:    "EnergyMap-IEX",
+				Region:      RegionAllIndia,
+				Value:       5.5,
+				Unit:        "INR/kWh",
+				Timestamp:   now.Add(24 * time.Hour),
+				CollectedAt: now,
+				ValidUntil:  now.Add(24 * time.Hour),
+				IsForecast:  true,
+				Quality:     "forecast",
+			},
+		},
+	}
+
+	handler := NewHandlerWithOptions(provider, HandlerOptions{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	_, err := handler.GetForecastSignals(
+		context.Background(),
+		SignalRequest{
+			SignalType: SignalTypeCost,
+			Region:     "IN-SOUTH",
+		},
+		24*time.Hour,
+	)
+	if err == nil {
+		t.Fatal("expected unrelated region to be rejected")
+	}
+}

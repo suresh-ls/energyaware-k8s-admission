@@ -171,6 +171,18 @@ func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, err
 	return result, nil
 }
 
+// normalizeSignalRegion converts user-facing region names into the canonical
+// region values used by signal providers.
+func normalizeSignalRegion(region string) string {
+	region = strings.ToUpper(strings.TrimSpace(region))
+
+	if region == "ALL INDIA" {
+		return RegionAllIndia
+	}
+
+	return region
+}
+
 // GetForecastSignals retrieves and validates forecast entries from providers
 // that implement ForecastSignalProvider. Forecast caching is deferred until
 // the project defines a forecast-specific cache policy.
@@ -188,7 +200,7 @@ func (h *Handler) GetForecastSignals(ctx context.Context, request SignalRequest,
 		return nil, fmt.Errorf("forecast horizon must be positive")
 	}
 	request.SignalType = normalizeSignalType(request.SignalType)
-	request.Region = strings.ToUpper(strings.TrimSpace(request.Region))
+	request.Region = normalizeSignalRegion(request.Region)
 	if request.SignalType == "" || request.Region == "" {
 		return nil, fmt.Errorf("requested signal type and region are required")
 	}

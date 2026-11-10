@@ -217,3 +217,198 @@ func TestCostProviderRouterHandlerIntegration(t *testing.T) {
 		t.Error("expected a current signal, not a forecast")
 	}
 }
+
+func TestGetForecastSignalsSuccess(t *testing.T) {
+	issuedAt := time.Now().UTC().Truncate(time.Second)
+	targetDate := time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/developer/v1/forecast/iex/dam/latest" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("X-API-Key") != "test-key" {
+			t.Error("API key header missing")
+		}
+
+		fmt.Fprintf(w, `{
+			"data": [{
+				"target_date": %q,
+				"horizon_days": 1,
+				"vwap_q10": 4269.0,
+				"vwap_q50": 5555.0,
+				"vwap_q90": 5853.0,
+				"vwap_mean": 5290.0,
+				"model_version": "dam-30d-v2.2",
+				"issued_at": %q
+			}],
+			"meta": {
+				"market": "DAM",
+				"product": "outlook_14d",
+				"issued_at": %q,
+				"model_version": "dam-30d-v2.2",
+				"freshness": {
+					"issued_at": %q,
+					"staleness_minutes": 10
+				}
+			}
+		}`,
+			targetDate,
+			issuedAt.Format(time.RFC3339),
+			issuedAt.Format(time.RFC3339),
+			issuedAt.Format(time.RFC3339),
+		)
+	}))
+	defer server.Close()
+
+	provider := NewProvider("test-key", server.Client(), server.URL)
+
+	got, err := provider.GetForecastSignals(
+		context.Background(),
+		signals.SignalRequest{
+			SignalType: signals.SignalTypeCost,
+			Region:     "All India",
+		},
+		24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GetForecastSignals returned error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 forecast signal, got %d", len(got))
+	}
+
+	signal := got[0]
+
+	if signal.SignalType != signals.SignalTypeCost {
+		t.Errorf("unexpected signal type: %q", signal.SignalType)
+	}
+	if signal.Provider != "EnergyMap-IEX" {
+		t.Errorf("unexpected provider: %q", signal.Provider)
+	}
+	if signal.Value != 5.555 {
+		t.Errorf("expected 5.555 INR/kWh, got %f", signal.Value)
+	}
+	if signal.Unit != "INR/kWh" {
+		t.Errorf("unexpected unit: %q", signal.Unit)
+	}
+	if signal.Region != signals.RegionAllIndia {
+		t.Errorf("unexpected region: %q", signal.Region)
+	}
+	if !signal.IsForecast {
+		t.Error("expected forecast signal")
+	}
+	if signal.Timestamp.IsZero() {
+		t.Error("expected delivery date timestamp")
+	}
+	if signal.CollectedAt.IsZero() {
+		t.Error("expected collection timestamp")
+	}
+	if !signal.ValidUntil.Equal(issuedAt.Add(24 * time.Hour)) {
+		t.Errorf("unexpected ValidUntil: %v", signal.ValidUntil)
+	}
+	if signal.Quality != "forecast" {
+		t.Errorf("unexpected quality: %q", signal.Quality)
+	}
+}
+
+func TestGetForecastSignalsMissingAPIKey(t *testing.T) {
+	provider := NewProvider("", http.DefaultClient, "http://localhost")
+
+	_, err := provider.GetForecastSignals(
+		context.Background(),
+		signals.SignalRequest{
+			SignalType: signals.SignalTypeCost,
+			Region:     "All India",
+		},
+		24*time.Hour,
+	)
+	if err == nil {
+		t.Fatal("expected missing API key error")
+	}
+}
+
+func TestGetForecastSignalsHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upgrade required", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	provider := NewProvider("test-key", server.Client(), server.URL)
+
+	_, err := provider.GetForecastSignals(
+		context.Background(),
+		signals.SignalRequest{
+			SignalType: signals.SignalTypeCost,
+			Region:     "All India",
+		},
+		24*time.Hour,
+	)
+	if err == nil {
+		t.Fatal("expected forecast API HTTP error")
+	}
+}
+
+func TestGetForecastSignalsHorizonFiltering(t *testing.T) {
+	issuedAt := time.Now().UTC().Truncate(time.Second)
+	tomorrow := time.Now().UTC().Add(24 * time.Hour).Format("2006-01-02")
+	dayAfterTomorrow := time.Now().UTC().Add(48 * time.Hour).Format("2006-01-02")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{
+			"data": [
+				{
+					"target_date": %q,
+					"horizon_days": 1,
+					"vwap_q50": 5000,
+					"issued_at": %q
+				},
+				{
+					"target_date": %q,
+					"horizon_days": 2,
+					"vwap_q50": 6000,
+					"issued_at": %q
+				}
+			],
+			"meta": {
+				"issued_at": %q,
+				"freshness": {"staleness_minutes": 10}
+			}
+		}`,
+			tomorrow,
+			issuedAt.Format(time.RFC3339),
+			dayAfterTomorrow,
+			issuedAt.Format(time.RFC3339),
+			issuedAt.Format(time.RFC3339),
+		)
+	}))
+	defer server.Close()
+
+	provider := NewProvider("test-key", server.Client(), server.URL)
+
+	got, err := provider.GetForecastSignals(
+		context.Background(),
+		signals.SignalRequest{
+			SignalType: signals.SignalTypeCost,
+			Region:     "All India",
+		},
+		24*time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("GetForecastSignals returned error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf(
+			"expected only 1 forecast within 24-hour horizon, got %d",
+			len(got),
+		)
+	}
+
+	if got[0].Value != 5 {
+		t.Errorf(
+			"expected first forecast value 5 INR/kWh, got %f",
+			got[0].Value,
+		)
+	}
+}
