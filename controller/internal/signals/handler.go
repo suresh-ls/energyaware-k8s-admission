@@ -33,14 +33,21 @@ func NewHandlerWithOptions(provider SignalProvider, options HandlerOptions) *Han
 	if defaultAge <= 0 {
 		defaultAge = defaultMaxSignalAge
 	}
+
 	ages := make(map[string]time.Duration, len(options.MaxSignalAge)+1)
 	ages["*"] = defaultAge
+
 	for signalType, age := range options.MaxSignalAge {
 		if age > 0 {
 			ages[normalizeSignalType(signalType)] = age
 		}
 	}
-	return &Handler{provider: provider, cache: make(map[SignalRequest]Signal), maxAges: ages}
+
+	return &Handler{
+		provider: provider,
+		cache:    make(map[SignalRequest]Signal),
+		maxAges:  ages,
+	}
 }
 
 func (h *Handler) maxAge(signalType string) time.Duration {
@@ -66,6 +73,7 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 
 	request.SignalType = normalizeSignalType(request.SignalType)
 	request.Region = strings.ToUpper(strings.TrimSpace(request.Region))
+
 	if request.SignalType == "" {
 		return Signal{}, fmt.Errorf("requested signal type is required")
 	}
@@ -74,6 +82,7 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 	}
 
 	now := time.Now()
+
 	h.mu.Lock()
 	cached, found := h.cache[request]
 	if found {
@@ -88,21 +97,34 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 	if err := ctx.Err(); err != nil {
 		return Signal{}, err
 	}
+
 	signal, err := h.provider.GetCurrentSignal(ctx, request)
 	if err != nil {
 		return Signal{}, fmt.Errorf("retrieve signal: %w", err)
 	}
+
 	if err := ctx.Err(); err != nil {
 		return Signal{}, err
 	}
+
 	if err := validateSignal(signal, time.Now(), h.maxAge(request.SignalType)); err != nil {
 		return Signal{}, fmt.Errorf("invalid provider signal: %w", err)
 	}
+
 	if normalizeSignalType(signal.SignalType) != request.SignalType {
-		return Signal{}, fmt.Errorf("provider returned signal type %q; requested %q", signal.SignalType, request.SignalType)
+		return Signal{}, fmt.Errorf(
+			"provider returned signal type %q; requested %q",
+			signal.SignalType,
+			request.SignalType,
+		)
 	}
+
 	if !strings.EqualFold(strings.TrimSpace(signal.Region), request.Region) {
-		return Signal{}, fmt.Errorf("provider returned region %q; requested %q", signal.Region, request.Region)
+		return Signal{}, fmt.Errorf(
+			"provider returned region %q; requested %q",
+			signal.Region,
+			request.Region,
+		)
 	}
 
 	signal.SignalType = request.SignalType
@@ -115,6 +137,7 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 	}
 	h.cache[request] = signal
 	h.mu.Unlock()
+
 	return signal, nil
 }
 
@@ -125,6 +148,7 @@ func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, err
 	if h == nil {
 		return SignalSet{}, fmt.Errorf("signal handler is nil")
 	}
+
 	region = strings.ToUpper(strings.TrimSpace(region))
 	if region == "" {
 		return SignalSet{}, fmt.Errorf("requested signal region is required")
@@ -140,11 +164,19 @@ func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, err
 	}
 
 	var result SignalSet
+
 	for _, item := range requests {
-		signal, err := h.GetSignal(ctx, SignalRequest{SignalType: item.typeName, Region: region})
+		signal, err := h.GetSignal(
+			ctx,
+			SignalRequest{
+				SignalType: item.typeName,
+				Region:     region,
+			},
+		)
 		if err != nil {
 			return SignalSet{}, fmt.Errorf("get %s signal: %w", item.name, err)
 		}
+
 		switch item.typeName {
 		case SignalTypeCarbon:
 			result.Carbon = signal
@@ -154,13 +186,18 @@ func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, err
 			result.DemandCap = signal
 		}
 	}
+
 	return result, nil
 }
 
 // GetForecastSignals retrieves and validates forecast entries from providers
 // that implement ForecastSignalProvider. Forecast caching is deferred until
 // the project defines a forecast-specific cache policy.
-func (h *Handler) GetForecastSignals(ctx context.Context, request SignalRequest, horizon time.Duration) ([]Signal, error) {
+func (h *Handler) GetForecastSignals(
+	ctx context.Context,
+	request SignalRequest,
+	horizon time.Duration,
+) ([]Signal, error) {
 	if h == nil || h.provider == nil {
 		return nil, fmt.Errorf("signal handler or provider is nil")
 	}
@@ -173,42 +210,70 @@ func (h *Handler) GetForecastSignals(ctx context.Context, request SignalRequest,
 	if horizon <= 0 {
 		return nil, fmt.Errorf("forecast horizon must be positive")
 	}
+
 	request.SignalType = normalizeSignalType(request.SignalType)
 	request.Region = strings.ToUpper(strings.TrimSpace(request.Region))
+
 	if request.SignalType == "" || request.Region == "" {
 		return nil, fmt.Errorf("requested signal type and region are required")
 	}
+
 	provider, ok := h.provider.(ForecastSignalProvider)
 	if !ok {
 		return nil, fmt.Errorf("configured provider does not support forecasts")
 	}
+
 	forecasts, err := provider.GetForecastSignals(ctx, request, horizon)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve forecast signals: %w", err)
 	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+
 	if len(forecasts) == 0 {
 		return nil, fmt.Errorf("forecast provider returned no entries")
 	}
+
 	now := time.Now()
+
 	for i := range forecasts {
 		signal := &forecasts[i]
+
 		if err := validateSignal(*signal, now, h.maxAge(request.SignalType)); err != nil {
 			return nil, fmt.Errorf("invalid forecast entry %d: %w", i, err)
 		}
+
 		if normalizeSignalType(signal.SignalType) != request.SignalType {
-			return nil, fmt.Errorf("forecast entry %d has wrong signal type %q", i, signal.SignalType)
+			return nil, fmt.Errorf(
+				"forecast entry %d has wrong signal type %q",
+				i,
+				signal.SignalType,
+			)
 		}
-		if !strings.EqualFold(strings.TrimSpace(signal.Region), request.Region) {
-			return nil, fmt.Errorf("forecast entry %d has wrong region %q", i, signal.Region)
+
+		// Accept either the requested region or an All-India forecast.
+		if !strings.EqualFold(strings.TrimSpace(signal.Region), request.Region) &&
+			!strings.EqualFold(strings.TrimSpace(signal.Region), RegionAllIndia) {
+			return nil, fmt.Errorf(
+				"forecast entry %d has wrong region %q; expected %q or %q",
+				i,
+				signal.Region,
+				request.Region,
+				RegionAllIndia,
+			)
 		}
+
 		if !signal.IsForecast {
-			return nil, fmt.Errorf("forecast entry %d is not marked as forecast", i)
+			return nil, fmt.Errorf(
+				"forecast entry %d is not marked as forecast",
+				i,
+			)
 		}
+
 		signal.SignalType = request.SignalType
-		signal.Region = request.Region
 	}
+
 	return forecasts, nil
 }

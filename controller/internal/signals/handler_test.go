@@ -440,3 +440,145 @@ func TestHandlerAllowsFutureMarketTimestamp(t *testing.T) {
 		t.Fatalf("future market timestamp should be allowed: %v", err)
 	}
 }
+
+type forecastMockProvider struct {
+	mockProvider
+	forecasts   []Signal
+	forecastErr error
+	lastRequest SignalRequest
+	lastHorizon time.Duration
+}
+
+func (p *forecastMockProvider) GetForecastSignals(
+	_ context.Context,
+	request SignalRequest,
+	horizon time.Duration,
+) ([]Signal, error) {
+	p.lastRequest = request
+	p.lastHorizon = horizon
+	return p.forecasts, p.forecastErr
+}
+
+func TestHandlerGetForecastSignalsValidForecast(t *testing.T) {
+	forecast := validTestSignal()
+	forecast.SignalType = SignalTypeCost
+	forecast.Region = "IN-SO"
+	forecast.Value = 5.555
+	forecast.Unit = "INR/kWh"
+	forecast.IsForecast = true
+	forecast.Quality = "forecast"
+
+	provider := &forecastMockProvider{
+		forecasts: []Signal{forecast},
+	}
+
+	handler := NewHandler(provider)
+	horizon := 48 * time.Hour
+
+	got, err := handler.GetForecastSignals(
+		context.Background(),
+		SignalRequest{
+			SignalType: " COST ",
+			Region:     " in-so ",
+		},
+		horizon,
+	)
+
+	if err != nil {
+		t.Fatalf("expected valid forecast, got error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 forecast, got %d", len(got))
+	}
+
+	if !got[0].IsForecast {
+		t.Error("expected returned signal to be marked as forecast")
+	}
+
+	if got[0].Value != 5.555 {
+		t.Errorf("expected forecast value 5.555, got %f", got[0].Value)
+	}
+
+	if provider.lastRequest.SignalType != SignalTypeCost {
+		t.Errorf("expected normalized signal type %q, got %q",
+			SignalTypeCost, provider.lastRequest.SignalType)
+	}
+
+	if provider.lastRequest.Region != "IN-SO" {
+		t.Errorf("expected normalized region IN-SO, got %q",
+			provider.lastRequest.Region)
+	}
+
+	if provider.lastHorizon != horizon {
+		t.Errorf("expected horizon %v, got %v",
+			horizon, provider.lastHorizon)
+	}
+}
+
+func TestHandlerGetForecastSignalsAcceptsAllIndiaForecast(t *testing.T) {
+    forecast := validTestSignal()
+    forecast.SignalType = SignalTypeCost
+    forecast.Region = RegionAllIndia
+    forecast.Value = 5.555
+    forecast.Unit = "INR/kWh"
+    forecast.IsForecast = true
+    forecast.Quality = "forecast"
+
+    provider := &forecastMockProvider{
+        forecasts: []Signal{forecast},
+    }
+
+    handler := NewHandler(provider)
+
+    got, err := handler.GetForecastSignals(
+        context.Background(),
+        SignalRequest{
+            SignalType: SignalTypeCost,
+            Region:     "IN-KA",
+        },
+        48*time.Hour,
+    )
+
+    if err != nil {
+        t.Fatalf("expected All-India forecast to be accepted, got error: %v", err)
+    }
+
+    if len(got) != 1 {
+        t.Fatalf("expected 1 forecast, got %d", len(got))
+    }
+
+    if got[0].Region != RegionAllIndia {
+        t.Errorf("expected region %q, got %q",
+            RegionAllIndia, got[0].Region)
+    }
+}
+
+func TestHandlerGetForecastSignalsRejectsUnrelatedRegion(t *testing.T) {
+    forecast := validTestSignal()
+    forecast.SignalType = SignalTypeCost
+    forecast.Region = "IN-MH"
+    forecast.Value = 5.555
+    forecast.Unit = "INR/kWh"
+    forecast.IsForecast = true
+    forecast.Quality = "forecast"
+
+    provider := &forecastMockProvider{
+        forecasts: []Signal{forecast},
+    }
+
+    handler := NewHandler(provider)
+
+    _, err := handler.GetForecastSignals(
+        context.Background(),
+        SignalRequest{
+            SignalType: SignalTypeCost,
+            Region:     "IN-KA",
+        },
+        48*time.Hour,
+    )
+
+    if err == nil {
+        t.Fatal("expected unrelated regional forecast to be rejected")
+    }
+}

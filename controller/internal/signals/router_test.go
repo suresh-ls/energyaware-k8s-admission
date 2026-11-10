@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type routerTestProvider struct {
@@ -130,5 +131,87 @@ func TestProviderRouterRejectsDuplicateNormalizedKeys(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected duplicate normalized keys to be rejected")
+	}
+}
+
+type forecastRouterTestProvider struct {
+	routerTestProvider
+	forecasts     []Signal
+	forecastCalls int
+	lastHorizon   time.Duration
+	forecastErr   error
+}
+
+func (p *forecastRouterTestProvider) GetForecastSignals(
+	_ context.Context,
+	request SignalRequest,
+	horizon time.Duration,
+) ([]Signal, error) {
+	p.forecastCalls++
+	p.lastRequest = request
+	p.lastHorizon = horizon
+
+	if p.forecastErr != nil {
+		return nil, p.forecastErr
+	}
+
+	return p.forecasts, nil
+}
+
+func TestProviderRouterRoutesForecastSignals(t *testing.T) {
+	forecast := validTestSignal()
+	forecast.SignalType = SignalTypeCost
+	forecast.IsForecast = true
+	forecast.Value = 5.555
+	forecast.Unit = "INR/kWh"
+
+	provider := &forecastRouterTestProvider{
+		forecasts: []Signal{forecast},
+	}
+
+	router, err := NewProviderRouter(map[string]SignalProvider{
+		"cost": provider,
+	})
+	if err != nil {
+		t.Fatalf("NewProviderRouter: %v", err)
+	}
+
+	horizon := 48 * time.Hour
+	got, err := router.GetForecastSignals(
+		context.Background(),
+		SignalRequest{
+			SignalType: " COST ",
+			Region:     "IN",
+		},
+		horizon,
+	)
+
+	if err != nil {
+		t.Fatalf("unexpected forecast routing error: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 forecast, got %d", len(got))
+	}
+
+	if !got[0].IsForecast {
+		t.Error("expected returned signal to be marked as a forecast")
+	}
+
+	if got[0].Value != 5.555 {
+		t.Errorf("expected value 5.555, got %f", got[0].Value)
+	}
+
+	if provider.forecastCalls != 1 {
+		t.Errorf("expected forecast provider called once, got %d", provider.forecastCalls)
+	}
+
+	if provider.lastHorizon != horizon {
+		t.Errorf("expected horizon %v, got %v", horizon, provider.lastHorizon)
+	}
+
+	if provider.lastRequest.SignalType != SignalTypeCost {
+		t.Errorf("expected normalized signal type %q, got %q",
+			SignalTypeCost, provider.lastRequest.SignalType)
 	}
 }
