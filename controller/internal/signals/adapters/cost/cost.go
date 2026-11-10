@@ -138,12 +138,12 @@ func (p *Provider) GetCurrentSignal(
 		return empty, fmt.Errorf("EnergyMap response is missing region")
 	}
 	if request.Region != "" &&
-	    !strings.EqualFold(strings.TrimSpace(request.Region), strings.TrimSpace(record.Region)) {
-	    return empty, fmt.Errorf(
-	        "requested region %q does not match EnergyMap region %q",
-	        request.Region,
-	        record.Region,
-	    )
+		!strings.EqualFold(strings.TrimSpace(request.Region), strings.TrimSpace(record.Region)) {
+		return empty, fmt.Errorf(
+			"requested region %q does not match EnergyMap region %q",
+			request.Region,
+			record.Region,
+		)
 	}
 	if record.Timestamp.IsZero() {
 		return empty, fmt.Errorf("EnergyMap response is missing timestamp")

@@ -1,0 +1,33 @@
+name: Demand signal and energy export
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  demand:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - directory: .
+            go: '1.24.x'
+            packages: './...'
+          - directory: controller
+            go: '1.27.x'
+            packages: './internal/signals/... ./cmd/demand-probe'
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Format
+        run: test -z "$(gofmt -l $(go list -f '{{.Dir}}' ${{ matrix.packages }}))"
+      - name: Test
+        run: go test -race -count=1 ${{ matrix.packages }}
+      - name: Vet
+        run: go vet ${{ matrix.packages }}
