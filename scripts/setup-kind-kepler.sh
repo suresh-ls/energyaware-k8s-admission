@@ -11,11 +11,12 @@
 #   ./scripts/setup-kind-kepler.sh --teardown      # delete the cluster
 #
 # Environment overrides:
-#   CLUSTER_NAME (default: energygate)
+#   CLUSTER_NAME (default: carbongate)
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-energygate}"
+CLUSTER_NAME="${CLUSTER_NAME:-carbongate}"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 PROM_NS="monitoring"
 KEPLER_NS="kepler"
 PROM_LOCAL_PORT="${PROM_LOCAL_PORT:-9090}"
@@ -83,7 +84,7 @@ if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   log "Kind cluster '${CLUSTER_NAME}' already exists, reusing it"
 else
   log "Creating Kind cluster '${CLUSTER_NAME}'"
-  kind create cluster --name "${CLUSTER_NAME}"
+  kind create cluster --name "${CLUSTER_NAME}" --config "${REPO_ROOT}/deploy/kind-config.yaml"
 fi
 kubectl config use-context "kind-${CLUSTER_NAME}" >/dev/null
 kubectl wait --for=condition=Ready node --all --timeout=120s

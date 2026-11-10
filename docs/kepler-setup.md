@@ -14,8 +14,7 @@ flowchart LR
   K -->|scrape every 15s| P[Prometheus]
   SM[ServiceMonitor] -.selects.-> K
   P -->|PromQL| D[KeplerDemandProvider]
-  D --> C[Cache + TTL]
-  C --> G[Generic Signal Handler]
+  D --> G[Generic Signal Handler + Cache + TTL]
   G --> E[Decision Engine]
 ```
 
@@ -102,17 +101,21 @@ has no RAPL.
 
 ## Manual setup
 
-### 1. Create the cluster
+### 1. Use the shared cluster
+
+Follow [cluster/README.md](../cluster/README.md) for Kueue. Skip creation if
+`carbongate` exists; use `kubectl config use-context kind-carbongate`.
+The setup script now defaults to `carbongate`; `CLUSTER_NAME` overrides it.
 
 ```bash
-kind create cluster --name energygate
+kind create cluster --config deploy/kind-config.yaml
 kubectl get nodes          # should show Ready
 ```
 
 Confirm RAPL is visible inside the Kind node (skip with the fake meter):
 
 ```bash
-docker exec energygate-control-plane ls /sys/class/powercap
+docker exec carbongate-control-plane ls /sys/class/powercap
 ```
 
 ### 2. Install Prometheus
@@ -246,5 +249,29 @@ kepler_node_cpu_watts{zone="package"}
 ## Teardown
 
 ```bash
-kind delete cluster --name energygate
+kind delete cluster --name carbongate
 ```
+
+## Pod/container attribution and validation (#6)
+
+With Kepler v0.12.0, inspect these metric families in both `/metrics` and Prometheus:
+
+| Scope | Power (W) | Cumulative energy (J) |
+|---|---|---|
+| Node | `kepler_node_cpu_watts` | `kepler_node_cpu_joules_total` |
+| Pod | `kepler_pod_cpu_watts` | `kepler_pod_cpu_joules_total` |
+| Container | `kepler_container_cpu_watts` | `kepler_container_cpu_joules_total` |
+
+Pod/container attribution requires Kubernetes discovery/cgroup access. Check the
+installed Kepler chart's configuration and Pod labels; do not blindly apply the
+historical `deploy/kepler-configmap.yaml` snapshot, which disables kube discovery
+and contains instance-specific metadata. CPU attribution is estimated; the node
+RAPL meter is not a per-pod physical sensor.
+
+Run `scripts/verify-kepler.sh kind-carbongate` to assert Prometheus has node, pod
+and container series, and check the target cluster before using those values in
+admission decisions. The script is read-only. Family HELP/TYPE lines alone are
+not sufficient; actual scraped series must exist.
+
+See [demand signal](demand-signal.md) for configuration, shared-handler usage and
+freshness policy, and [historical energy export](energy-export.md) for datasets.
