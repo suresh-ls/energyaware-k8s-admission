@@ -54,14 +54,29 @@ func validateSignal(signal Signal, now time.Time, maxAge time.Duration) error {
 	}
 
 	if normalizeSignalType(signal.SignalType) == SignalTypeDemandCap {
-		if signal.Cap <= 0 {
-			return fmt.Errorf("demand cap must be positive")
+		if math.IsNaN(signal.Cap) || math.IsInf(signal.Cap, 0) || signal.Cap <= 0 {
+			return fmt.Errorf("demand cap must be finite and positive")
 		}
-		if signal.Utilization < 0 || math.IsNaN(signal.Utilization) || math.IsInf(signal.Utilization, 0) {
-			return fmt.Errorf("demand utilization must be finite and non-negative")
+		if signal.Value < 0 || (signal.Unit != "W" && signal.Unit != "kW") {
+			return fmt.Errorf("demand must be nonnegative power in W or kW")
 		}
-		if strings.TrimSpace(signal.Status) == "" {
-			return fmt.Errorf("demand status is required")
+		ratio := signal.Value / signal.Cap
+		if math.IsNaN(ratio) ||
+			math.IsInf(ratio, 0) ||
+			math.IsNaN(signal.Utilization) ||
+			math.IsInf(signal.Utilization, 0) ||
+			math.Abs(signal.Utilization-ratio) > 1e-9 {
+			return fmt.Errorf("demand utilization must equal value/cap")
+		}
+		status := "WITHIN_CAP"
+		if signal.Value > signal.Cap {
+			status = "EXCEEDED"
+		}
+		if signal.Status != status {
+			return fmt.Errorf("demand status must be %s", status)
+		}
+		if signal.Quality == "STALE" {
+			return fmt.Errorf("stale demand is unavailable")
 		}
 	}
 	return nil

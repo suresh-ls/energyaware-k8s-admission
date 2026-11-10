@@ -14,10 +14,12 @@ type Handler struct {
 	mu       sync.RWMutex
 	cache    map[SignalRequest]Signal
 	maxAges  map[string]time.Duration
+	now      func() time.Time
 }
 
 // HandlerOptions configures maximum signal age by signal type.
 type HandlerOptions struct {
+	Now                 func() time.Time
 	DefaultMaxSignalAge time.Duration
 	MaxSignalAge        map[string]time.Duration
 }
@@ -40,7 +42,16 @@ func NewHandlerWithOptions(provider SignalProvider, options HandlerOptions) *Han
 			ages[normalizeSignalType(signalType)] = age
 		}
 	}
-	return &Handler{provider: provider, cache: make(map[SignalRequest]Signal), maxAges: ages}
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Handler{
+		provider: provider,
+		cache:    make(map[SignalRequest]Signal),
+		maxAges:  ages,
+		now:      now,
+	}
 }
 
 func (h *Handler) maxAge(signalType string) time.Duration {
@@ -73,12 +84,15 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 		return Signal{}, fmt.Errorf("requested signal region is required")
 	}
 
-	now := time.Now()
+	now := h.now()
 	h.mu.Lock()
 	cached, found := h.cache[request]
 	if found {
 		if err := validateSignal(cached, now, h.maxAge(request.SignalType)); err == nil {
 			h.mu.Unlock()
+			if cached.Quality == "FRESH" {
+				cached.Quality = "CACHED"
+			}
 			return cached, nil
 		}
 		delete(h.cache, request)
@@ -95,7 +109,7 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 	if err := ctx.Err(); err != nil {
 		return Signal{}, err
 	}
-	if err := validateSignal(signal, time.Now(), h.maxAge(request.SignalType)); err != nil {
+	if err := validateSignal(signal, h.now(), h.maxAge(request.SignalType)); err != nil {
 		return Signal{}, fmt.Errorf("invalid provider signal: %w", err)
 	}
 	if normalizeSignalType(signal.SignalType) != request.SignalType {
@@ -192,7 +206,7 @@ func (h *Handler) GetForecastSignals(ctx context.Context, request SignalRequest,
 	if len(forecasts) == 0 {
 		return nil, fmt.Errorf("forecast provider returned no entries")
 	}
-	now := time.Now()
+	now := h.now()
 	for i := range forecasts {
 		signal := &forecasts[i]
 		if err := validateSignal(*signal, now, h.maxAge(request.SignalType)); err != nil {
