@@ -318,6 +318,7 @@ func TestHandlerGetSignalsReturnsAllThreeSignals(t *testing.T) {
 	carbon := validTestSignal()
 	cost := validTestSignal()
 	cost.SignalType, cost.Value, cost.Unit = SignalTypeCost, 8.5, "INR/kWh"
+	cost.Region = RegionAllIndia
 	demand := validTestSignal()
 	demand.SignalType, demand.Value, demand.Unit = SignalTypeDemandCap, 100, "kW"
 	demand.Cap, demand.Utilization, demand.Status = 120, 100.0/120.0, "WITHIN_CAP"
@@ -336,11 +337,91 @@ func TestHandlerGetSignalsReturnsAllThreeSignals(t *testing.T) {
 	if got.Cost.SignalType != SignalTypeCost || got.Cost.Value != cost.Value {
 		t.Errorf("unexpected cost signal: %+v", got.Cost)
 	}
+	if got.Cost.Region != RegionAllIndia {
+		t.Errorf("expected cost region %q, got %q", RegionAllIndia, got.Cost.Region)
+	}
 	if got.DemandCap.SignalType != SignalTypeDemandCap || got.DemandCap.Value != demand.Value {
 		t.Errorf("unexpected demand-cap signal: %+v", got.DemandCap)
 	}
 	if len(provider.calls) != 3 {
 		t.Errorf("expected all three provider calls, got %d", len(provider.calls))
+	}
+}
+
+type requestRecordingProvider struct {
+	mu       sync.Mutex
+	requests []SignalRequest
+}
+
+func (p *requestRecordingProvider) GetCurrentSignal(_ context.Context, request SignalRequest) (Signal, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, request)
+	p.mu.Unlock()
+
+	signal := validTestSignal()
+	switch request.SignalType {
+	case SignalTypeCost:
+		signal.SignalType = SignalTypeCost
+		signal.Region = RegionAllIndia
+		signal.Unit = "INR/kWh"
+		signal.Value = 5
+	case SignalTypeDemandCap:
+		signal.SignalType = SignalTypeDemandCap
+		signal.Region = request.Region
+		signal.Unit = "kW"
+		signal.Value = 10
+		signal.Cap = 20
+		signal.Utilization = 0.5
+		signal.Status = "WITHIN_CAP"
+	default:
+		signal.Region = request.Region
+	}
+	return signal, nil
+}
+
+func TestHandlerGetSignalsUsesPerSignalRegions(t *testing.T) {
+	provider := &requestRecordingProvider{}
+	got, err := NewHandler(provider).GetSignals(context.Background(), "in-so")
+	if err != nil {
+		t.Fatalf("GetSignals returned error: %v", err)
+	}
+	if got.Carbon.Region != "IN-SO" || got.Cost.Region != RegionAllIndia || got.DemandCap.Region != "IN-SO" {
+		t.Fatalf("unexpected signal regions: carbon=%q cost=%q demand=%q", got.Carbon.Region, got.Cost.Region, got.DemandCap.Region)
+	}
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected 3 provider requests, got %d", len(provider.requests))
+	}
+	expected := map[string]string{
+		SignalTypeCarbon:    "IN-SO",
+		SignalTypeCost:      RegionAllIndia,
+		SignalTypeDemandCap: "IN-SO",
+	}
+	for _, request := range provider.requests {
+		if request.Region != expected[request.SignalType] {
+			t.Errorf("%s request used region %q; expected %q", request.SignalType, request.Region, expected[request.SignalType])
+		}
+	}
+}
+
+func TestHandlerNormalizesCostRegionAliases(t *testing.T) {
+	for _, region := range []string{"All India", "ALL INDIA", "ALL-INDIA", "all_india"} {
+		signal := validTestSignal()
+		signal.SignalType = SignalTypeCost
+		signal.Region = "All India"
+		signal.Unit = "INR/kWh"
+		got, err := NewHandler(mockProvider{signal: signal}).GetSignal(context.Background(), SignalRequest{
+			SignalType: SignalTypeCost,
+			Region:     region,
+		})
+		if err != nil {
+			t.Fatalf("GetSignal(%q) failed: %v", region, err)
+		}
+		if got.Region != RegionAllIndia {
+			t.Errorf("GetSignal(%q) returned region %q; expected %q", region, got.Region, RegionAllIndia)
+		}
 	}
 }
 

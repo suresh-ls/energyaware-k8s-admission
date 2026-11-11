@@ -209,8 +209,8 @@ func TestCostProviderRouterHandlerIntegration(t *testing.T) {
 		t.Errorf("unexpected signal type: %s", got.SignalType)
 	}
 
-	if got.Region != "ALL INDIA" {
-		t.Errorf("expected normalized region ALL INDIA, got %s", got.Region)
+	if got.Region != signals.RegionAllIndia {
+		t.Errorf("expected normalized region %q, got %s", signals.RegionAllIndia, got.Region)
 	}
 
 	if got.IsForecast {

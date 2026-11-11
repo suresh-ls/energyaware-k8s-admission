@@ -165,7 +165,7 @@ func (p *Provider) GetCurrentSignal(
 		return empty, fmt.Errorf("EnergyMap response is missing region")
 	}
 	if request.Region != "" &&
-		!strings.EqualFold(strings.TrimSpace(request.Region), strings.TrimSpace(record.Region)) {
+		normalizeRegion(request.Region) != normalizeRegion(record.Region) {
 		return empty, fmt.Errorf(
 			"requested region %q does not match EnergyMap region %q",
 			request.Region,
@@ -198,7 +198,7 @@ func (p *Provider) GetCurrentSignal(
 	return signals.Signal{
 		SignalType:  signals.SignalTypeCost,
 		Provider:    "EnergyMap-IEX",
-		Region:      record.Region,
+		Region:      signals.RegionAllIndia,
 		Value:       pricePerKWh,
 		Unit:        priceUnit,
 		Timestamp:   record.Timestamp,
@@ -207,6 +207,16 @@ func (p *Provider) GetCurrentSignal(
 		IsForecast:  false,
 		Quality:     quality,
 	}, nil
+}
+
+func normalizeRegion(region string) string {
+	region = strings.ToUpper(strings.TrimSpace(region))
+	switch region {
+	case "ALL INDIA", "ALL-INDIA", "ALL_INDIA":
+		return signals.RegionAllIndia
+	default:
+		return region
+	}
 }
 
 // GetForecastSignals retrieves daily IEX DAM price forecasts from EnergyMap.
