@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type Provider struct{}
@@ -18,7 +19,34 @@ func NewProvider() *Provider {
 func (p *Provider) GetCurrentSignal(
 	ctx context.Context,
 	request signals.SignalRequest,
-) (signals.Signal, error) {
+) (output signals.Signal, retErr error) {
+	started := time.Now()
+
+	logger := ctrl.Log.WithName("demand-provider").WithValues(
+		"component", "demand-provider",
+		"operation", "get_current_signal",
+		"signal_type", request.SignalType,
+		"provider", "dummy_demand_cap",
+		"region", strings.TrimSpace(request.Region),
+	)
+
+	logger.Info("operation started")
+
+	defer func() {
+		duration := time.Since(started).Milliseconds()
+
+		if retErr != nil {
+			logger.Error(retErr, "operation failed",
+				"status", "failure",
+				"duration_ms", duration,
+			)
+		} else {
+			logger.Info("operation completed",
+				"status", "success",
+				"duration_ms", duration,
+			)
+		}
+	}()
 	if p == nil {
 		return signals.Signal{}, fmt.Errorf("demand cap provider must not be nil")
 	}

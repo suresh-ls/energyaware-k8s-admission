@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 const (
@@ -89,7 +90,34 @@ func NewProvider(apiKey string, client *http.Client, baseURL string) *Provider {
 func (p *Provider) GetCurrentSignal(
 	ctx context.Context,
 	request signals.SignalRequest,
-) (signals.Signal, error) {
+) (output signals.Signal, retErr error) {
+	started := time.Now()
+
+	logger := ctrl.Log.WithName("cost-provider").WithValues(
+		"component", "cost-provider",
+		"operation", "get_current_signal",
+		"signal_type", request.SignalType,
+		"provider", "energymap",
+		"region", request.Region,
+	)
+
+	logger.Info("operation started")
+
+	defer func() {
+		duration := time.Since(started).Milliseconds()
+
+		if retErr != nil {
+			logger.Error(retErr, "operation failed",
+				"status", "failure",
+				"duration_ms", duration,
+			)
+		} else {
+			logger.Info("operation completed",
+				"status", "success",
+				"duration_ms", duration,
+			)
+		}
+	}()
 	var empty signals.Signal
 
 	if p == nil {
@@ -132,7 +160,11 @@ func (p *Provider) GetCurrentSignal(
 
 	req.Header.Set("X-API-Key", p.apiKey)
 	req.Header.Set("Accept", "application/json")
-
+	logger.V(1).Info("sending current price request",
+		"method", http.MethodGet,
+		"endpoint", parsedURL.Path,
+		"market_type", "DAM",
+	)
 	collectedAt := time.Now().UTC()
 
 	resp, err := p.client.Do(req)
@@ -214,7 +246,35 @@ func (p *Provider) GetForecastSignals(
 	ctx context.Context,
 	request signals.SignalRequest,
 	horizon time.Duration,
-) ([]signals.Signal, error) {
+) (output []signals.Signal, retErr error) {
+	started := time.Now()
+
+	logger := ctrl.Log.WithName("cost-provider").WithValues(
+		"component", "cost-provider",
+		"operation", "get_forecast_signals",
+		"signal_type", request.SignalType,
+		"provider", "energymap",
+		"region", request.Region,
+	)
+
+	logger.Info("operation started")
+
+	defer func() {
+		duration := time.Since(started).Milliseconds()
+
+		if retErr != nil {
+			logger.Error(retErr, "operation failed",
+				"status", "failure",
+				"duration_ms", duration,
+			)
+		} else {
+			logger.Info("operation completed",
+				"status", "success",
+				"duration_ms", duration,
+				"forecast_count", len(output),
+			)
+		}
+	}()
 	if p == nil {
 		return nil, fmt.Errorf("cost provider must not be nil")
 	}
@@ -252,7 +312,11 @@ func (p *Provider) GetForecastSignals(
 
 	req.Header.Set("X-API-Key", p.apiKey)
 	req.Header.Set("Accept", "application/json")
-
+	logger.V(1).Info("sending forecast request",
+		"method", http.MethodGet,
+		"endpoint", parsedURL.Path,
+		"horizon_hours", horizon.Hours(),
+	)
 	collectedAt := time.Now().UTC()
 
 	resp, err := p.client.Do(req)

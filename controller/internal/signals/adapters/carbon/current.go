@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type carbonResponse struct {
@@ -19,7 +20,34 @@ type carbonResponse struct {
 	TemporalGranularity string     `json:"temporalGranularity"`
 }
 
-func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal, error) {
+func (c *Client) GetCurrent(ctx context.Context, region string) (output signals.Signal, retErr error) {
+	started := time.Now()
+
+	logger := ctrl.Log.WithName("carbon-provider").WithValues(
+		"component", "carbon-provider",
+		"operation", "get_current_signal",
+		"signal_type", signals.SignalTypeCarbon,
+		"provider", "electricity_maps",
+		"region", strings.TrimSpace(region),
+	)
+
+	logger.Info("operation started")
+
+	defer func() {
+		duration := time.Since(started).Milliseconds()
+
+		if retErr != nil {
+			logger.Error(retErr, "operation failed",
+				"status", "failure",
+				"duration_ms", duration,
+			)
+		} else {
+			logger.Info("operation completed",
+				"status", "success",
+				"duration_ms", duration,
+			)
+		}
+	}()
 	if c == nil {
 		return signals.Signal{}, fmt.Errorf("carbon client is nil")
 	}

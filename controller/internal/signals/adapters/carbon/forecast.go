@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 type forecastEntry struct {
@@ -27,7 +28,35 @@ func (c *Client) GetForecast(
 	ctx context.Context,
 	region string,
 	horizon time.Duration,
-) ([]signals.Signal, error) {
+) (output []signals.Signal, retErr error) {
+	started := time.Now()
+
+	logger := ctrl.Log.WithName("carbon-provider").WithValues(
+		"component", "carbon-provider",
+		"operation", "get_forecast_signals",
+		"signal_type", signals.SignalTypeCarbon,
+		"provider", "electricity_maps",
+		"region", strings.TrimSpace(region),
+	)
+
+	logger.Info("operation started")
+
+	defer func() {
+		duration := time.Since(started).Milliseconds()
+
+		if retErr != nil {
+			logger.Error(retErr, "operation failed",
+				"status", "failure",
+				"duration_ms", duration,
+			)
+		} else {
+			logger.Info("operation completed",
+				"status", "success",
+				"duration_ms", duration,
+				"forecast_count", len(output),
+			)
+		}
+	}()
 	if c == nil {
 		return nil, fmt.Errorf("carbon client is nil")
 	}
@@ -70,6 +99,12 @@ func (c *Client) GetForecast(
 	if err != nil {
 		return nil, err
 	}
+
+	logger.V(1).Info("sending carbon forecast request",
+		"method", "GET",
+		"endpoint", "/v4/carbon-intensity/forecast",
+		"horizon_hours", hours,
+	)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
