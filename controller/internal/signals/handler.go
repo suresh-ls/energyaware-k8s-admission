@@ -75,8 +75,7 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 		return Signal{}, err
 	}
 
-	request.SignalType = normalizeSignalType(request.SignalType)
-	request.Region = normalizeSignalRegion(request.Region)
+	request = normalizeSignalRequest(request)
 	if request.SignalType == "" {
 		return Signal{}, fmt.Errorf("requested signal type is required")
 	}
@@ -189,6 +188,20 @@ func normalizeSignalRegion(region string) string {
 	}
 }
 
+// normalizeSignalRequest applies the canonical region contract for each
+// signal type. Carbon and demand-cap use the requested regional zone, while
+// cost is always sourced from the national ALL-INDIA market.
+func normalizeSignalRequest(request SignalRequest) SignalRequest {
+	request.SignalType = normalizeSignalType(request.SignalType)
+	request.Region = normalizeSignalRegion(request.Region)
+
+	if request.SignalType == SignalTypeCost {
+		request.Region = RegionAllIndia
+	}
+
+	return request
+}
+
 // GetForecastSignals retrieves and validates forecast entries from providers
 // that implement ForecastSignalProvider. Forecast caching is deferred until
 // the project defines a forecast-specific cache policy.
@@ -205,8 +218,7 @@ func (h *Handler) GetForecastSignals(ctx context.Context, request SignalRequest,
 	if horizon <= 0 {
 		return nil, fmt.Errorf("forecast horizon must be positive")
 	}
-	request.SignalType = normalizeSignalType(request.SignalType)
-	request.Region = normalizeSignalRegion(request.Region)
+	request = normalizeSignalRequest(request)
 	if request.SignalType == "" || request.Region == "" {
 		return nil, fmt.Errorf("requested signal type and region are required")
 	}
