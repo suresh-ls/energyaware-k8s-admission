@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type forecastEntry struct {
@@ -27,7 +28,7 @@ func (c *Client) GetForecast(
 	ctx context.Context,
 	region string,
 	horizon time.Duration,
-) ([]signals.Signal, error) {
+) (results []signals.Signal, retErr error) {
 	if c == nil {
 		return nil, fmt.Errorf("carbon client is nil")
 	}
@@ -42,6 +43,32 @@ func (c *Client) GetForecast(
 	if zone == "" {
 		zone = c.config.Zone
 	}
+
+	logger := log.FromContext(ctx).WithName("carbon")
+	start := time.Now()
+
+	defer func() {
+		duration := time.Since(start).Milliseconds()
+
+		if retErr != nil {
+			logger.Error(retErr, "Failed to fetch carbon forecast",
+				"zone", zone,
+				"horizonHours", horizon.Hours(),
+				"provider", ProviderName,
+				"durationMs", duration,
+			)
+			return
+		}
+
+		logger.V(1).Info("Fetched carbon forecast",
+			"zone", zone,
+			"horizonHours", horizon.Hours(),
+			"recordCount", len(results),
+			"provider", ProviderName,
+			"durationMs", duration,
+		)
+	}()
+
 	if zone != c.config.Zone {
 		return nil, fmt.Errorf(
 			"requested region %s does not match configured zone %s",
@@ -140,5 +167,6 @@ func (c *Client) GetForecast(
 		})
 	}
 
-	return forecastSignals, nil
+	results = forecastSignals
+	return results, nil
 }

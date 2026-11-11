@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type carbonResponse struct {
@@ -19,7 +20,7 @@ type carbonResponse struct {
 	TemporalGranularity string     `json:"temporalGranularity"`
 }
 
-func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal, error) {
+func (c *Client) GetCurrent(ctx context.Context, region string) (result signals.Signal, retErr error) {
 	if c == nil {
 		return signals.Signal{}, fmt.Errorf("carbon client is nil")
 	}
@@ -29,6 +30,29 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 	if err := ctx.Err(); err != nil {
 		return signals.Signal{}, err
 	}
+	logger := log.FromContext(ctx).WithName("carbon")
+	start := time.Now()
+
+	defer func() {
+		duration := time.Since(start).Milliseconds()
+
+		if retErr != nil {
+			logger.Error(retErr, "Failed to fetch current carbon signal",
+				"zone", region,
+				"provider", ProviderName,
+				"durationMs", duration,
+			)
+			return
+		}
+
+		logger.V(1).Info("Fetched current carbon signal",
+			"zone", result.Region,
+			"provider", ProviderName,
+			"intensity", result.Value,
+			"quality", result.Quality,
+			"durationMs", duration,
+		)
+	}()
 
 	zone := strings.TrimSpace(region)
 	if zone == "" {
@@ -104,7 +128,7 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 		quality = "STALE"
 	}
 
-	return signals.Signal{
+	result = signals.Signal{
 		SignalType:  "carbon",
 		Provider:    ProviderName,
 		Region:      data.Zone,
@@ -115,5 +139,7 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 		ValidUntil:  validUntil,
 		IsForecast:  false,
 		Quality:     quality,
-	}, nil
+	}
+
+	return result, nil
 }
