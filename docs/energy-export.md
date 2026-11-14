@@ -77,3 +77,7 @@ At least two real evaluation samples are still required, and internal gaps remai
 errors. `estimated_boundary_seconds` records exactly how much runtime was filled
 this way (zero in strict/full coverage mode). This field must travel with the
 training dataset; do not present an edge estimate as a fully observed interval.
+
+
+Structured logging, log-level flags and output streams are documented in
+[Kepler demand and history logging](logging.md).

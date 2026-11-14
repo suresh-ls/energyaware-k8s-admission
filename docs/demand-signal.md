@@ -133,3 +133,7 @@ CPU energy is attributed/estimated by Kepler, even with real node RAPL. Fake-met
 values are synthetic and cannot establish real carbon savings.
 
 Historical prediction datasets: [energy export](energy-export.md).
+
+
+Structured logging, log-level flags and output streams are documented in
+[Kepler demand and history logging](logging.md).

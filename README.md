@@ -6,6 +6,7 @@ Energy-aware Kubernetes workload admission using carbon, cost and demand signals
 - [Kepler + Prometheus setup](docs/kepler-setup.md)
 - [Demand signal contract, configuration and failure policy](docs/demand-signal.md)
 - [Historical workload energy export](docs/energy-export.md)
+- [Kepler demand and history logging](docs/logging.md)
 - [Controller](controller/README.md)
 
 Production signal adapters live in `controller/internal/signals/adapters`.
