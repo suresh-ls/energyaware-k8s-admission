@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type carbonResponse struct {
@@ -19,7 +20,7 @@ type carbonResponse struct {
 	TemporalGranularity string     `json:"temporalGranularity"`
 }
 
-func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal, error) {
+func (c *Client) GetCurrent(ctx context.Context, region string) (result signals.Signal, retErr error) {
 	if c == nil {
 		return signals.Signal{}, fmt.Errorf("carbon client is nil")
 	}
@@ -29,6 +30,38 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 	if err := ctx.Err(); err != nil {
 		return signals.Signal{}, err
 	}
+
+	logger := log.FromContext(ctx).WithName("carbon")
+	start := time.Now()
+	var httpStatus int
+
+	defer func() {
+		duration := time.Since(start).Milliseconds()
+
+		if retErr != nil {
+			errorCategory := "carbon_retrieval_failed"
+			if httpStatus != 0 {
+				errorCategory = "provider_http_error"
+			}
+
+			logger.Error(nil, "Failed to fetch current carbon signal",
+				"errorCategory", errorCategory,
+				"httpStatus", httpStatus,
+				"zone", region,
+				"provider", ProviderName,
+				"durationMs", duration,
+			)
+			return
+		}
+
+		logger.V(1).Info("Fetched current carbon signal",
+			"zone", result.Region,
+			"provider", ProviderName,
+			"intensity", result.Value,
+			"quality", result.Quality,
+			"durationMs", duration,
+		)
+	}()
 
 	zone := strings.TrimSpace(region)
 	if zone == "" {
@@ -41,8 +74,7 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 		)
 	}
 
-	endpoint := "/v4/carbon-intensity/latest?zone=" +
-		url.QueryEscape(zone)
+	endpoint := "/v4/carbon-intensity/latest?zone=" + url.QueryEscape(zone)
 
 	req, err := c.newRequest(ctx, endpoint)
 	if err != nil {
@@ -55,11 +87,11 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		httpStatus = resp.StatusCode
 		return signals.Signal{}, fmt.Errorf(
-			"Electricity Maps returned HTTP %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(body)),
+			"Electricity Maps returned HTTP %d",
+			resp.StatusCode,
 		)
 	}
 
@@ -104,7 +136,7 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 		quality = "STALE"
 	}
 
-	return signals.Signal{
+	result = signals.Signal{
 		SignalType:  "carbon",
 		Provider:    ProviderName,
 		Region:      data.Zone,
@@ -115,5 +147,7 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (signals.Signal,
 		ValidUntil:  validUntil,
 		IsForecast:  false,
 		Quality:     quality,
-	}, nil
+	}
+
+	return result, nil
 }
