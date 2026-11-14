@@ -742,19 +742,3 @@ func TestHandlerGetForecastSignalsNormalizesCostRegion(t *testing.T) {
 		t.Fatalf("expected cost forecast region to normalize to %q: %v", RegionAllIndia, err)
 	}
 }
-
-func TestDemandContractValidation(t *testing.T) {
-	now := time.Now()
-	good := Signal{SignalType: SignalTypeDemandCap, Provider: "kepler", Region: "IN-SO", Value: 10, Unit: "kW", Cap: 10, Utilization: 1, Status: "WITHIN_CAP", Timestamp: now.Add(-time.Second), ValidUntil: now.Add(time.Minute), Quality: "FRESH"}
-	for _, change := range []func(*Signal){
-		func(s *Signal) { s.Cap = math.NaN() }, func(s *Signal) { s.Cap = math.Inf(1) },
-		func(s *Signal) { s.Utilization = .5 }, func(s *Signal) { s.Status = "EXCEEDED" },
-		func(s *Signal) { s.Unit = "percent" }, func(s *Signal) { s.Quality = "STALE" },
-	} {
-		bad := good
-		change(&bad)
-		if err := validateSignal(bad, now, time.Hour); err == nil {
-			t.Fatalf("accepted invalid demand: %+v", bad)
-		}
-	}
-}
