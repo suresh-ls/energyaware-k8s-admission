@@ -134,41 +134,41 @@ func (p *requestAwareProvider) GetCurrentSignal(_ context.Context, request Signa
 }
 
 func TestHandlerSeparatesSignalsByTypeAndRegion(t *testing.T) {
-    carbon := validTestSignal()
+	carbon := validTestSignal()
 
-    cost := validTestSignal()
-    cost.SignalType = "cost"
-    cost.Region = "ALL-INDIA"
-    cost.Value = 8.5
-    cost.Unit = "INR/kWh"
+	cost := validTestSignal()
+	cost.SignalType = "cost"
+	cost.Region = "ALL-INDIA"
+	cost.Value = 8.5
+	cost.Unit = "INR/kWh"
 
-    provider := &requestAwareProvider{signals: map[SignalRequest]Signal{
-        {SignalType: "carbon", Region: "IN-SO"}:   carbon,
-        {SignalType: "cost", Region: "ALL-INDIA"}: cost,
-    }}
+	provider := &requestAwareProvider{signals: map[SignalRequest]Signal{
+		{SignalType: "carbon", Region: "IN-SO"}:   carbon,
+		{SignalType: "cost", Region: "ALL-INDIA"}: cost,
+	}}
 
-    handler := NewHandler(provider)
+	handler := NewHandler(provider)
 
-    carbonResult, err := handler.GetSignal(context.Background(), carbonRequest())
-    if err != nil {
-        t.Fatalf("carbon request failed: %v", err)
-    }
+	carbonResult, err := handler.GetSignal(context.Background(), carbonRequest())
+	if err != nil {
+		t.Fatalf("carbon request failed: %v", err)
+	}
 
-    costResult, err := handler.GetSignal(context.Background(), SignalRequest{
-        SignalType: "cost",
-        Region:   "IN-SO",
-    })
-    if err != nil {
-        t.Fatalf("cost request failed: %v", err)
-    }
+	costResult, err := handler.GetSignal(context.Background(), SignalRequest{
+		SignalType: "cost",
+		Region:     "IN-SO",
+	})
+	if err != nil {
+		t.Fatalf("cost request failed: %v", err)
+	}
 
-    if carbonResult.Value != 450 || carbonResult.SignalType != "carbon" {
-        t.Errorf("unexpected carbon result: %+v", carbonResult)
-    }
+	if carbonResult.Value != 450 || carbonResult.SignalType != "carbon" {
+		t.Errorf("unexpected carbon result: %+v", carbonResult)
+	}
 
-    if costResult.Value != 8.5 || costResult.SignalType != "cost" {
-        t.Errorf("unexpected cost result: %+v", costResult)
-    }
+	if costResult.Value != 8.5 || costResult.SignalType != "cost" {
+		t.Errorf("unexpected cost result: %+v", costResult)
+	}
 }
 
 func TestHandlerCacheNormalizesRequest(t *testing.T) {
@@ -540,25 +540,25 @@ func TestHandlerRejectsSignalOlderThanMaxAge(t *testing.T) {
 }
 
 func TestHandlerAllowsFutureMarketTimestamp(t *testing.T) {
-    signal := validTestSignal()
-    signal.SignalType = SignalTypeCost
-    signal.Region = RegionAllIndia
-    signal.Timestamp = time.Now().Add(24 * time.Hour)
-    signal.ValidUntil = time.Now().Add(time.Hour)
-    signal.CollectedAt = time.Now()
-    signal.Unit = "INR/kWh"
+	signal := validTestSignal()
+	signal.SignalType = SignalTypeCost
+	signal.Region = RegionAllIndia
+	signal.Timestamp = time.Now().Add(24 * time.Hour)
+	signal.ValidUntil = time.Now().Add(time.Hour)
+	signal.CollectedAt = time.Now()
+	signal.Unit = "INR/kWh"
 
-    _, err := NewHandler(&mockProvider{signal: signal}).GetSignal(
-        context.Background(),
-        SignalRequest{
-            SignalType: SignalTypeCost,
-            Region:     "IN-SO",
-        },
-    )
+	_, err := NewHandler(&mockProvider{signal: signal}).GetSignal(
+		context.Background(),
+		SignalRequest{
+			SignalType: SignalTypeCost,
+			Region:     "IN-SO",
+		},
+	)
 
-    if err != nil {
-        t.Fatalf("future market timestamp should be allowed: %v", err)
-    }
+	if err != nil {
+		t.Fatalf("future market timestamp should be allowed: %v", err)
+	}
 }
 
 func TestDemandContractValidation(t *testing.T) {

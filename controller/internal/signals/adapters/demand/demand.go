@@ -4,6 +4,7 @@ package demand
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -14,7 +15,10 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+const ProviderName = "kepler"
 
 const StatusWithinCap = "WITHIN_CAP"
 const StatusExceeded = "EXCEEDED"
@@ -89,7 +93,38 @@ func NewProvider(cfg Config) (*Provider, error) {
 
 // GetCurrentSignal retrieves a measurement without adding a second cache.
 // Demand forecasts are deliberately not implemented; Kepler measures the present.
-func (p *Provider) GetCurrentSignal(ctx context.Context, request signals.SignalRequest) (signals.Signal, error) {
+func (p *Provider) GetCurrentSignal(ctx context.Context, request signals.SignalRequest) (result signals.Signal, err error) {
+	logCtx := ctx
+	if logCtx == nil {
+		logCtx = context.Background()
+	}
+	logger := log.FromContext(logCtx).WithName("demand").WithValues(
+		"provider", ProviderName, "signal_type", request.SignalType, "region", strings.ToUpper(strings.TrimSpace(request.Region)), "unit", "kW")
+	started := time.Now()
+	stage := "request_validation"
+	logger.V(1).Info("Retrieving demand signal")
+	defer func() {
+		if err != nil {
+			kind := "operation_failed"
+			if errors.Is(err, context.Canceled) {
+				kind = "cancelled"
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				kind = "timeout"
+			}
+			// Raw transport/parse errors can contain URLs, queries or response data.
+			if kind == "cancelled" {
+				logger.V(1).Info("Demand signal retrieval cancelled", "stage", stage, "duration_ms", time.Since(started).Milliseconds())
+			} else {
+				logger.Error(nil, "Could not retrieve demand signal", "stage", stage, "error_kind", kind, "duration_ms", time.Since(started).Milliseconds())
+			}
+			return
+		}
+		logger.Info("Retrieved demand signal", "value", result.Value, "cap", result.Cap, "utilization", result.Utilization,
+			"status", result.Status, "timestamp", result.Timestamp, "valid_until", result.ValidUntil, "quality", result.Quality,
+			"duration_ms", time.Since(started).Milliseconds())
+	}()
+
 	if p == nil || ctx == nil {
 		return signals.Signal{}, fmt.Errorf("provider and context required")
 	}
@@ -107,14 +142,17 @@ func (p *Provider) GetCurrentSignal(ctx context.Context, request signals.SignalR
 	// Evaluate both queries at the same instant. A timestamp() query is needed:
 	// an aggregate's result timestamp alone does not reveal stale source scrapes.
 	evaluation := p.cfg.Now().UTC()
-	watts, err := p.query(ctx, p.cfg.Query, evaluation)
+	stage = "power_query"
+	watts, err := p.query(ctx, p.cfg.Query, evaluation, "power")
 	if err != nil {
 		return signals.Signal{}, err
 	}
-	seconds, err := p.query(ctx, p.cfg.TimestampQuery, evaluation)
+	stage = "source_timestamp_query"
+	seconds, err := p.query(ctx, p.cfg.TimestampQuery, evaluation, "source_timestamp")
 	if err != nil {
 		return signals.Signal{}, fmt.Errorf("source timestamp: %w", err)
 	}
+	stage = "measurement_validation"
 	if watts < 0 || seconds <= 0 || seconds > float64(evaluation.Unix())+float64(evaluation.Nanosecond())/1e9 {
 		return signals.Signal{}, fmt.Errorf("invalid power or future source timestamp")
 	}
@@ -125,6 +163,8 @@ func (p *Provider) GetCurrentSignal(ctx context.Context, request signals.SignalR
 	observed := time.Unix(int64(whole), int64(fraction*1e9)).UTC()
 	collected := p.cfg.Now().UTC()
 	expiry := observed.Add(p.cfg.MaxSampleAge)
+	stage = "freshness_validation"
+	logger = logger.WithValues("source_timestamp", observed, "source_valid_until", expiry)
 	if !collected.Before(expiry) {
 		return signals.Signal{}, fmt.Errorf("kepler measurement expired at %s", expiry.Format(time.RFC3339Nano))
 	}
@@ -141,14 +181,14 @@ func (p *Provider) GetCurrentSignal(ctx context.Context, request signals.SignalR
 	if p.cfg.Synthetic {
 		quality = "simulated"
 	}
-	return signals.Signal{SignalType: signals.SignalTypeDemandCap, Provider: "kepler", Region: p.cfg.Region,
+	return signals.Signal{SignalType: signals.SignalTypeDemandCap, Provider: ProviderName, Region: p.cfg.Region,
 		Value: value, Unit: "kW", Cap: p.cfg.CapKW, Utilization: utilization, Status: status,
 		Timestamp: observed, CollectedAt: collected, ValidUntil: expiry, Quality: quality}, nil
 }
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
-func (p *Provider) query(ctx context.Context, expression string, at time.Time) (float64, error) {
+func (p *Provider) query(ctx context.Context, expression string, at time.Time, queryKind string) (float64, error) {
 	u := p.base.JoinPath("api", "v1", "query")
 	q := u.Query()
 	q.Set("query", expression)
@@ -163,6 +203,8 @@ func (p *Provider) query(ctx context.Context, expression string, at time.Time) (
 		return 0, fmt.Errorf("query Prometheus: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	log.FromContext(ctx).WithName("demand").V(1).Info("Received Prometheus response",
+		"provider", ProviderName, "query_kind", queryKind, "http_status", resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("prometheus HTTP %d", resp.StatusCode)
 	}

@@ -5,13 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"os"
 	"os/signal"
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals/adapters/demand"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 func run(ctx context.Context) error {
@@ -23,7 +25,11 @@ func run(ctx context.Context) error {
 	age := flag.Duration("max-sample-age", time.Minute, "maximum source scrape age")
 	timeout := flag.Duration("timeout", 5*time.Second, "total provider query timeout")
 	synthetic := flag.Bool("synthetic", false, "label fake-meter measurements as simulated")
+	opts := zap.Options{}
+	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	ctx = log.IntoContext(ctx, ctrl.Log.WithName("demand-probe"))
 	provider, err := demand.NewProvider(demand.Config{
 		PrometheusURL: *prom, Region: *region, CapKW: *capKW,
 		Query: *query, TimestampQuery: *timestampQuery,
@@ -52,7 +58,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	if err := run(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		log.FromContext(context.Background()).Error(nil, "Demand probe failed", "error_kind", "command_failed")
 		os.Exit(1)
 	}
 }
