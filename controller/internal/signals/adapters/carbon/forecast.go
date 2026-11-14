@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -46,12 +46,20 @@ func (c *Client) GetForecast(
 
 	logger := log.FromContext(ctx).WithName("carbon")
 	start := time.Now()
+	var httpStatus int
 
 	defer func() {
 		duration := time.Since(start).Milliseconds()
 
 		if retErr != nil {
-			logger.Error(retErr, "Failed to fetch carbon forecast",
+			errorCategory := "carbon_retrieval_failed"
+			if httpStatus != 0 {
+				errorCategory = "provider_http_error"
+			}
+
+			logger.Error(nil, "Failed to fetch carbon forecast",
+				"errorCategory", errorCategory,
+				"httpStatus", httpStatus,
 				"zone", zone,
 				"horizonHours", horizon.Hours(),
 				"provider", ProviderName,
@@ -104,11 +112,11 @@ func (c *Client) GetForecast(
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		httpStatus = resp.StatusCode
 		return nil, fmt.Errorf(
-			"Electricity Maps returned HTTP %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(body)),
+			"Electricity Maps returned HTTP %d",
+			resp.StatusCode,
 		)
 	}
 

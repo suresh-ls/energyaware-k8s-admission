@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -30,14 +30,23 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (result signals.
 	if err := ctx.Err(); err != nil {
 		return signals.Signal{}, err
 	}
+
 	logger := log.FromContext(ctx).WithName("carbon")
 	start := time.Now()
+	var httpStatus int
 
 	defer func() {
 		duration := time.Since(start).Milliseconds()
 
 		if retErr != nil {
-			logger.Error(retErr, "Failed to fetch current carbon signal",
+			errorCategory := "carbon_retrieval_failed"
+			if httpStatus != 0 {
+				errorCategory = "provider_http_error"
+			}
+
+			logger.Error(nil, "Failed to fetch current carbon signal",
+				"errorCategory", errorCategory,
+				"httpStatus", httpStatus,
 				"zone", region,
 				"provider", ProviderName,
 				"durationMs", duration,
@@ -65,8 +74,7 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (result signals.
 		)
 	}
 
-	endpoint := "/v4/carbon-intensity/latest?zone=" +
-		url.QueryEscape(zone)
+	endpoint := "/v4/carbon-intensity/latest?zone=" + url.QueryEscape(zone)
 
 	req, err := c.newRequest(ctx, endpoint)
 	if err != nil {
@@ -79,11 +87,11 @@ func (c *Client) GetCurrent(ctx context.Context, region string) (result signals.
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		httpStatus = resp.StatusCode
 		return signals.Signal{}, fmt.Errorf(
-			"Electricity Maps returned HTTP %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(body)),
+			"Electricity Maps returned HTTP %d",
+			resp.StatusCode,
 		)
 	}
 
