@@ -61,7 +61,11 @@ func validateSignal(signal Signal, now time.Time, maxAge time.Duration) error {
 			return fmt.Errorf("demand must be nonnegative power in W or kW")
 		}
 		ratio := signal.Value / signal.Cap
-		if math.IsNaN(ratio) || math.IsInf(ratio, 0) || math.IsNaN(signal.Utilization) || math.IsInf(signal.Utilization, 0) || math.Abs(signal.Utilization-ratio) > 1e-9 {
+		if math.IsNaN(ratio) ||
+			math.IsInf(ratio, 0) ||
+			math.IsNaN(signal.Utilization) ||
+			math.IsInf(signal.Utilization, 0) ||
+			math.Abs(signal.Utilization-ratio) > 1e-9 {
 			return fmt.Errorf("demand utilization must equal value/cap")
 		}
 		status := "WITHIN_CAP"

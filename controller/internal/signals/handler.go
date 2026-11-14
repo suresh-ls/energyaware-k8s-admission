@@ -19,7 +19,6 @@ type Handler struct {
 
 // HandlerOptions configures maximum signal age by signal type.
 type HandlerOptions struct {
-	// Now optionally supplies a clock for deterministic expiry tests.
 	Now                 func() time.Time
 	DefaultMaxSignalAge time.Duration
 	MaxSignalAge        map[string]time.Duration
@@ -47,7 +46,12 @@ func NewHandlerWithOptions(provider SignalProvider, options HandlerOptions) *Han
 	if now == nil {
 		now = time.Now
 	}
-	return &Handler{provider: provider, cache: make(map[SignalRequest]Signal), maxAges: ages, now: now}
+	return &Handler{
+		provider: provider,
+		cache:    make(map[SignalRequest]Signal),
+		maxAges:  ages,
+		now:      now,
+	}
 }
 
 func (h *Handler) maxAge(signalType string) time.Duration {
@@ -71,8 +75,7 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 		return Signal{}, err
 	}
 
-	request.SignalType = normalizeSignalType(request.SignalType)
-	request.Region = strings.ToUpper(strings.TrimSpace(request.Region))
+	request = normalizeSignalRequest(request)
 	if request.SignalType == "" {
 		return Signal{}, fmt.Errorf("requested signal type is required")
 	}
@@ -98,6 +101,9 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 	if err := ctx.Err(); err != nil {
 		return Signal{}, err
 	}
+	// The handler exposes canonical regions to callers and providers.
+	// Cost is intentionally requested with the same canonical ALL-INDIA
+	// identifier used by its forecast signals.
 	signal, err := h.provider.GetCurrentSignal(ctx, request)
 	if err != nil {
 		return Signal{}, fmt.Errorf("retrieve signal: %w", err)
@@ -111,12 +117,13 @@ func (h *Handler) GetSignal(ctx context.Context, request SignalRequest) (Signal,
 	if normalizeSignalType(signal.SignalType) != request.SignalType {
 		return Signal{}, fmt.Errorf("provider returned signal type %q; requested %q", signal.SignalType, request.SignalType)
 	}
-	if !strings.EqualFold(strings.TrimSpace(signal.Region), request.Region) {
+	providerRegion := normalizeSignalRegion(signal.Region)
+	if providerRegion != request.Region {
 		return Signal{}, fmt.Errorf("provider returned region %q; requested %q", signal.Region, request.Region)
 	}
 
 	signal.SignalType = request.SignalType
-	signal.Region = request.Region
+	signal.Region = providerRegion
 
 	h.mu.Lock()
 	if err := ctx.Err(); err != nil {
@@ -135,7 +142,7 @@ func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, err
 	if h == nil {
 		return SignalSet{}, fmt.Errorf("signal handler is nil")
 	}
-	region = strings.ToUpper(strings.TrimSpace(region))
+	region = normalizeSignalRegion(region)
 	if region == "" {
 		return SignalSet{}, fmt.Errorf("requested signal region is required")
 	}
@@ -143,15 +150,16 @@ func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, err
 	requests := []struct {
 		name     string
 		typeName string
+		region   string
 	}{
-		{name: "carbon", typeName: SignalTypeCarbon},
-		{name: "cost", typeName: SignalTypeCost},
-		{name: "demand-cap", typeName: SignalTypeDemandCap},
+		{name: "carbon", typeName: SignalTypeCarbon, region: region},
+		{name: "cost", typeName: SignalTypeCost, region: RegionAllIndia},
+		{name: "demand-cap", typeName: SignalTypeDemandCap, region: region},
 	}
 
 	var result SignalSet
 	for _, item := range requests {
-		signal, err := h.GetSignal(ctx, SignalRequest{SignalType: item.typeName, Region: region})
+		signal, err := h.GetSignal(ctx, SignalRequest{SignalType: item.typeName, Region: item.region})
 		if err != nil {
 			return SignalSet{}, fmt.Errorf("get %s signal: %w", item.name, err)
 		}
@@ -165,6 +173,33 @@ func (h *Handler) GetSignals(ctx context.Context, region string) (SignalSet, err
 		}
 	}
 	return result, nil
+}
+
+// normalizeSignalRegion converts user-facing region names into the canonical
+// region values used by signal providers.
+func normalizeSignalRegion(region string) string {
+	region = strings.ToUpper(strings.TrimSpace(region))
+
+	switch region {
+	case "ALL INDIA", "ALL-INDIA", "ALL_INDIA":
+		return RegionAllIndia
+	default:
+		return region
+	}
+}
+
+// normalizeSignalRequest applies the canonical region contract for each
+// signal type. Carbon and demand-cap use the requested regional zone, while
+// cost is always sourced from the national ALL-INDIA market.
+func normalizeSignalRequest(request SignalRequest) SignalRequest {
+	request.SignalType = normalizeSignalType(request.SignalType)
+	request.Region = normalizeSignalRegion(request.Region)
+
+	if request.SignalType == SignalTypeCost {
+		request.Region = RegionAllIndia
+	}
+
+	return request
 }
 
 // GetForecastSignals retrieves and validates forecast entries from providers
@@ -183,8 +218,7 @@ func (h *Handler) GetForecastSignals(ctx context.Context, request SignalRequest,
 	if horizon <= 0 {
 		return nil, fmt.Errorf("forecast horizon must be positive")
 	}
-	request.SignalType = normalizeSignalType(request.SignalType)
-	request.Region = strings.ToUpper(strings.TrimSpace(request.Region))
+	request = normalizeSignalRequest(request)
 	if request.SignalType == "" || request.Region == "" {
 		return nil, fmt.Errorf("requested signal type and region are required")
 	}
@@ -211,14 +245,15 @@ func (h *Handler) GetForecastSignals(ctx context.Context, request SignalRequest,
 		if normalizeSignalType(signal.SignalType) != request.SignalType {
 			return nil, fmt.Errorf("forecast entry %d has wrong signal type %q", i, signal.SignalType)
 		}
-		if !strings.EqualFold(strings.TrimSpace(signal.Region), request.Region) {
+		providerRegion := normalizeSignalRegion(signal.Region)
+		if providerRegion != request.Region {
 			return nil, fmt.Errorf("forecast entry %d has wrong region %q", i, signal.Region)
 		}
 		if !signal.IsForecast {
 			return nil, fmt.Errorf("forecast entry %d is not marked as forecast", i)
 		}
 		signal.SignalType = request.SignalType
-		signal.Region = request.Region
+		signal.Region = providerRegion
 	}
 	return forecasts, nil
 }

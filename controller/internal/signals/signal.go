@@ -6,6 +6,7 @@ const (
 	SignalTypeCarbon    = "carbon"
 	SignalTypeCost      = "cost"
 	SignalTypeDemandCap = "demand_cap"
+	RegionAllIndia      = "ALL-INDIA"
 )
 
 // SignalRequest identifies the signal requested by the caller.
