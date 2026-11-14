@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/suresh-ls/energyaware-k8s-admission/internal/logging"
 )
 
 // Workload is supplied by the caller from recorded job/pod metadata. Resource
@@ -45,6 +48,8 @@ type Record struct {
 }
 
 type Exporter struct {
+	// Logger overrides the default structured logger.
+	Logger *slog.Logger
 	// AllowEdgeEstimates permits at most one missing evaluation at each edge.
 	// The nearest observed power is held constant over that bounded gap.
 	AllowEdgeEstimates bool
@@ -58,7 +63,26 @@ func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 // Export computes trapezoidal watt-seconds / 3600 over the complete runtime.
 // Strict mode requires every evaluation sample. AllowEdgeEstimates explicitly
 // permits bounded boundary gaps; internal gaps and partial responses fail.
-func (e Exporter) Export(ctx context.Context, w Workload) (Record, error) {
+func (e Exporter) Export(ctx context.Context, w Workload) (record Record, err error) {
+	logger := logging.OrDefault(e.Logger).With("component", "energy_history", "provider", "kepler",
+		"namespace", w.Namespace, "workload", w.Name, "workload_uid", w.UID)
+	started := time.Now()
+	stage := "workload_validation"
+	logger.Debug("Starting workload energy export", "start", w.Start, "end", w.End)
+	defer func() {
+		if err != nil {
+			if logging.ErrorKind(err) == "cancelled" {
+				logger.Debug("Workload energy export cancelled", "stage", stage, "duration_ms", time.Since(started).Milliseconds())
+			} else {
+				logger.Error("Could not export workload energy", "stage", stage, "error_kind", logging.ErrorKind(err), "duration_ms", time.Since(started).Milliseconds())
+			}
+			return
+		}
+		logger.Info("Exported workload energy", "energy_wh", record.EnergyWh, "runtime_seconds", record.RuntimeSeconds,
+			"measurement_mode", record.MeasurementMode,
+			"estimated_boundary_seconds", record.EstimatedBoundarySeconds, "duration_ms", time.Since(started).Milliseconds())
+	}()
+
 	var empty Record
 	if ctx == nil {
 		return empty, fmt.Errorf("context required")
@@ -112,11 +136,13 @@ func (e Exporter) Export(ctx context.Context, w Workload) (Record, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	stage = "prometheus_query"
 	resp, err := client.Do(req)
 	if err != nil {
 		return empty, fmt.Errorf("query history: %w", err)
 	}
 	defer resp.Body.Close()
+	logger.Debug("Received Prometheus history response", "http_status", resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
 		return empty, fmt.Errorf("Prometheus HTTP %d", resp.StatusCode)
 	}
@@ -127,6 +153,7 @@ func (e Exporter) Export(ctx context.Context, w Workload) (Record, error) {
 	if len(body) > 8<<20 {
 		return empty, fmt.Errorf("history response too large")
 	}
+	stage = "response_validation"
 	var result struct {
 		Status   string   `json:"status"`
 		Warnings []string `json:"warnings"`
@@ -143,7 +170,9 @@ func (e Exporter) Export(ctx context.Context, w Workload) (Record, error) {
 	if result.Status != "success" || result.Data.ResultType != "matrix" || len(result.Data.Result) != 1 || len(result.Warnings) > 0 {
 		return empty, fmt.Errorf("expected one complete workload matrix without warnings")
 	}
+	stage = "coverage_validation"
 	samples := result.Data.Result[0].Values
+	logger = logger.With("sample_count", len(samples), "expected_samples", intervals+1)
 	if len(samples) < 2 || len(samples[0]) != 2 {
 		return empty, fmt.Errorf("at least two complete samples required")
 	}
@@ -157,6 +186,7 @@ func (e Exporter) Export(ctx context.Context, w Workload) (Record, error) {
 	if firstIndex < 0 || firstIndex > 1 || missingTail < 0 || missingTail > 1 || (!e.AllowEdgeEstimates && (firstIndex != 0 || missingTail != 0)) {
 		return empty, fmt.Errorf("incomplete coverage: got %d samples, want %d (edge estimation requires explicit opt-in)", len(samples), intervals+1)
 	}
+	stage = "energy_integration"
 	var energy, lastTime, lastWatts, firstWatts float64
 
 	for i, sample := range samples {
@@ -188,6 +218,9 @@ func (e Exporter) Export(ctx context.Context, w Workload) (Record, error) {
 		lastTime, lastWatts = at, watts
 	}
 	edgeSeconds := float64(firstIndex+missingTail) * stepSeconds
+	if edgeSeconds > 0 {
+		logger.Warn("Estimated workload energy at scrape boundaries", "estimated_boundary_seconds", edgeSeconds)
+	}
 	energy += (float64(firstIndex)*stepSeconds*firstWatts + float64(missingTail)*stepSeconds*lastWatts) / 3600
 	if !finite(energy) {
 		return empty, fmt.Errorf("energy overflow")

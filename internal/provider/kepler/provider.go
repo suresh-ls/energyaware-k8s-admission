@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suresh-ls/energyaware-k8s-admission/internal/logging"
 	"github.com/suresh-ls/energyaware-k8s-admission/internal/signal"
 )
 
@@ -58,6 +60,8 @@ var (
 
 // Config configures the provider.
 type Config struct {
+	// Logger overrides the default logger for standalone demand retrieval.
+	Logger *slog.Logger
 	// PrometheusURL is the base URL, e.g. "http://localhost:9090". Required.
 	PrometheusURL string
 	// Query is the PromQL expression returning demand in WATTS as a single
@@ -147,12 +151,30 @@ func (p *Provider) Validate(sig signal.DemandSignal) error {
 // GetCurrentSignal queries Prometheus for current power, evaluates it against
 // the cap and returns a FRESH DemandSignal. It never returns a cached value;
 // caching and stale handling are layered on top of the provider.
-func (p *Provider) GetCurrentSignal(ctx context.Context) (signal.DemandSignal, error) {
+func (p *Provider) GetCurrentSignal(ctx context.Context) (result signal.DemandSignal, err error) {
+	logger := logging.OrDefault(p.cfg.Logger).With("component", "demand", "provider", ProviderName, "unit", p.cfg.Unit)
+	started := time.Now()
+	stage := "power_query"
+	logger.Debug("Retrieving demand signal")
+	defer func() {
+		if err != nil {
+			if logging.ErrorKind(err) == "cancelled" {
+				logger.Debug("Demand signal retrieval cancelled", "stage", stage)
+			} else {
+				logger.Error("Could not retrieve demand signal", "stage", stage, "error_kind", logging.ErrorKind(err), "duration_ms", time.Since(started).Milliseconds())
+			}
+			return
+		}
+		logger.Info("Retrieved demand signal", "value", result.Value, "cap", result.Cap, "utilization", result.Utilization,
+			"status", result.Status, "timestamp", result.Timestamp, "quality", result.Quality, "duration_ms", time.Since(started).Milliseconds())
+	}()
+
 	watts, observed, err := p.queryWatts(ctx)
 	if err != nil {
 		return signal.DemandSignal{}, err
 	}
 
+	stage = "measurement_validation"
 	value := watts
 	if p.cfg.Unit == signal.UnitKilowatt {
 		value = watts / 1000
@@ -240,9 +262,10 @@ func (p *Provider) queryWatts(ctx context.Context) (float64, time.Time, error) {
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("%w: %v", ErrPrometheusUnavailable, err)
+		return 0, time.Time{}, fmt.Errorf("%w: %w", ErrPrometheusUnavailable, err)
 	}
 	defer resp.Body.Close()
+	logging.OrDefault(p.cfg.Logger).Debug("Received Prometheus response", "component", "demand", "provider", ProviderName, "http_status", resp.StatusCode)
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
