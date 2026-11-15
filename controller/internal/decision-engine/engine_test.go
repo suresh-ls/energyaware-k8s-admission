@@ -140,11 +140,12 @@ func TestEvaluateWaitsForBetterForecastWindow(t *testing.T) {
 	lowCarbon.ValidUntil = now.Add(5 * time.Hour)
 
 	lowCost := current.Cost
+	lowCost.Region = signals.RegionAllIndia
 	lowCost.Value = 1
 	lowCost.Timestamp = time.Date(
-		futureTime.Year(),
-		futureTime.Month(),
-		futureTime.Day(),
+		futureTime.UTC().Year(),
+		futureTime.UTC().Month(),
+		futureTime.UTC().Day(),
 		0,
 		0,
 		0,

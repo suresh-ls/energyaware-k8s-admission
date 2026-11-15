@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/logging"
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // SignalSource is deliberately small so the engine can use the real generic
@@ -43,36 +45,189 @@ func NewEngine(source SignalSource, config Config) (*Engine, error) {
 //
 // Forecast support is optional at the provider level. If forecast retrieval is
 // unavailable, the engine safely evaluates the current option instead.
-func (e *Engine) Evaluate(ctx context.Context, workload WorkloadRequest) (Decision, error) {
-	if e == nil || e.signalSource == nil {
-		return Decision{}, fmt.Errorf("decision engine or signal source is nil")
-	}
+func (e *Engine) Evaluate(
+	ctx context.Context,
+	workload WorkloadRequest,
+) (Decision, error) {
+
 	if ctx == nil {
-		return Decision{}, fmt.Errorf("context is nil")
+		ctx = context.Background()
 	}
+
+	start := time.Now()
+
+	log := logf.FromContext(ctx)
+
+	if e == nil || e.signalSource == nil {
+		err := fmt.Errorf("decision engine or signal source is nil")
+
+		log.Error(
+			err,
+			"Decision engine evaluation failed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, workload.Region,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(start),
+		)
+
+		return Decision{}, err
+	}
+
 	if err := validateWorkload(workload); err != nil {
+		log.Error(
+			err,
+			"Invalid workload request",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "validate_workload",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, workload.Region,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(start),
+		)
+
 		return Decision{}, err
 	}
 
 	region := normalizeRegion(workload.Region)
 	now := e.clock()
 
+	log.Info(
+		"Decision evaluation started",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "evaluate",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusStarted,
+	)
+
 	if err := ctx.Err(); err != nil {
+		log.Error(
+			err,
+			"Decision evaluation cancelled",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(start),
+		)
+
 		return Decision{}, err
 	}
+
+	// Retrieve current signals.
+	signalStart := time.Now()
+
+	log.V(1).Info(
+		"Requesting current signals",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "get_signals",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusStarted,
+	)
 
 	currentSignals, err := e.signalSource.GetSignals(ctx, region)
 	if err != nil {
-		return Decision{}, fmt.Errorf("retrieve current signals: %w", err)
+		log.Error(
+			err,
+			"Current signal retrieval failed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "get_signals",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(signalStart),
+		)
+
+		return Decision{}, fmt.Errorf(
+			"retrieve current signals: %w",
+			err,
+		)
 	}
-	if err := validateSignalSet(currentSignals, region, now); err != nil {
+
+	log.Info(
+		"Current signals retrieved",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "get_signals",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusSuccess,
+		logging.FieldDuration, logging.SinceMillis(signalStart),
+	)
+
+	// Validate current signals.
+	validationStart := time.Now()
+
+	if err := validateSignalSet(
+		currentSignals,
+		region,
+		now,
+	); err != nil {
+		log.Error(
+			err,
+			"Signal validation failed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "validate_signals",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(validationStart),
+		)
+
 		return Decision{}, err
 	}
 
-	currentWindow, err := e.makeWindow(workload, currentSignals, now, now, false)
+	log.V(1).Info(
+		"Current signals validated",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "validate_signals",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusSuccess,
+		logging.FieldDuration, logging.SinceMillis(validationStart),
+	)
+
+	// Score the current execution window.
+	windowStart := time.Now()
+
+	currentWindow, err := e.makeWindow(
+		workload,
+		currentSignals,
+		now,
+		now,
+		false,
+	)
 	if err != nil {
-		return Decision{}, fmt.Errorf("score current execution window: %w", err)
+		log.Error(
+			err,
+			"Current execution window scoring failed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "score_current_window",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(windowStart),
+		)
+
+		return Decision{}, fmt.Errorf(
+			"score current execution window: %w",
+			err,
+		)
 	}
+
+	log.V(1).Info(
+		"Current execution window scored",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "score_current_window",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusSuccess,
+		logging.FieldDuration, logging.SinceMillis(windowStart),
+		"score", currentWindow.Score.Total,
+	)
 
 	result := Decision{
 		Action:      ActionRun,
@@ -81,38 +236,138 @@ func (e *Engine) Evaluate(ctx context.Context, workload WorkloadRequest) (Decisi
 		Selected:    currentWindow,
 		Current:     currentWindow,
 		EvaluatedAt: now,
-		Metadata:    map[string]string{"forecast": "not evaluated yet"},
+		Metadata: map[string]string{
+			"forecast": "not evaluated yet",
+		},
 	}
 
-	// Demand is a hard operational constraint. A deadline emergency can take
-	// precedence; otherwise the workload waits and is re-evaluated later.
-	if demandCapExceeded(currentSignals.DemandCap.Utilization, currentSignals.DemandCap.Status) {
+	// Demand is a hard operational constraint.
+	if demandCapExceeded(
+		currentSignals.DemandCap.Utilization,
+		currentSignals.DemandCap.Status,
+	) {
+		log.Info(
+			"Demand cap exceeded",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "check_demand_cap",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			"decision", "WAIT",
+		)
+
 		if deadlineAllowsImmediateRun(workload, now) {
-			result.Reason = "running as a deadline emergency despite the current demand-cap breach"
+			result.Reason =
+				"running as a deadline emergency despite the current demand-cap breach"
+
+			log.Info(
+				"Decision completed",
+				logging.FieldComponent, logging.ComponentDecisionEngine,
+				logging.FieldOperation, "evaluate",
+				logging.FieldWorkload, workload.Name,
+				logging.FieldRegion, region,
+				logging.FieldStatus, logging.StatusSuccess,
+				logging.FieldDuration, logging.SinceMillis(start),
+				"decision", string(result.Action),
+				"reason", result.Reason,
+			)
+
 			return result, nil
 		}
 
 		result.Action = ActionWait
-		result.Reason = "current demand cap is exceeded; re-evaluate later"
+		result.Reason =
+			"current demand cap is exceeded; re-evaluate later"
 		result.RequeueAfter = e.config.DefaultRequeueAfter
+
+		log.Info(
+			"Decision completed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			logging.FieldDuration, logging.SinceMillis(start),
+			"decision", string(result.Action),
+			"reason", result.Reason,
+		)
+
 		return result, nil
 	}
 
+	// High-priority workload close to deadline.
 	if workload.Priority >= e.config.PriorityRunThreshold &&
-		workload.Deadline.Sub(now) <= workload.ExpectedRuntime+e.config.PriorityDeadlineBuffer {
-		result.Reason = "high-priority workload is close to its deadline; run now"
+		workload.Deadline.Sub(now) <=
+			workload.ExpectedRuntime+e.config.PriorityDeadlineBuffer {
+
+		result.Reason =
+			"high-priority workload is close to its deadline; run now"
+
+		log.Info(
+			"Decision completed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			logging.FieldDuration, logging.SinceMillis(start),
+			"decision", string(result.Action),
+			"reason", result.Reason,
+		)
+
 		return result, nil
 	}
 
 	if deadlineAllowsImmediateRun(workload, now) {
-		result.Reason = "waiting would make the workload deadline infeasible; run now"
+		result.Reason =
+			"waiting would make the workload deadline infeasible; run now"
+
+		log.Info(
+			"Decision completed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			logging.FieldDuration, logging.SinceMillis(start),
+			"decision", string(result.Action),
+			"reason", result.Reason,
+		)
+
 		return result, nil
 	}
 
 	if workload.MaxDelay == 0 {
-		result.Reason = "workload does not permit additional scheduling delay"
+		result.Reason =
+			"workload does not permit additional scheduling delay"
+
+		log.Info(
+			"Decision completed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			logging.FieldDuration, logging.SinceMillis(start),
+			"decision", string(result.Action),
+			"reason", result.Reason,
+		)
+
 		return result, nil
 	}
+
+	// Retrieve carbon forecast.
+	carbonForecastStart := time.Now()
+
+	log.V(1).Info(
+		"Requesting carbon forecast",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "get_forecast",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldSignal, signals.SignalTypeCarbon,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusStarted,
+	)
 
 	carbonForecast, carbonErr := e.signalSource.GetForecastSignals(
 		ctx,
@@ -122,13 +377,77 @@ func (e *Engine) Evaluate(ctx context.Context, workload WorkloadRequest) (Decisi
 		},
 		e.config.ForecastHorizon,
 	)
+
 	if carbonErr != nil {
 		if err := ctx.Err(); err != nil {
+			log.Error(
+				err,
+				"Carbon forecast request cancelled",
+				logging.FieldComponent, logging.ComponentDecisionEngine,
+				logging.FieldOperation, "get_forecast",
+				logging.FieldWorkload, workload.Name,
+				logging.FieldSignal, signals.SignalTypeCarbon,
+				logging.FieldRegion, region,
+				logging.FieldStatus, logging.StatusFailure,
+				logging.FieldDuration, logging.SinceMillis(carbonForecastStart),
+			)
+
 			return Decision{}, err
 		}
-		result.Metadata["forecast"] = "unavailable; current option selected"
+
+		log.Error(
+			carbonErr,
+			"Carbon forecast unavailable",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "get_forecast",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldSignal, signals.SignalTypeCarbon,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(carbonForecastStart),
+		)
+
+		result.Metadata["forecast"] =
+			"unavailable; current option selected"
+
+		log.Info(
+			"Decision completed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			logging.FieldDuration, logging.SinceMillis(start),
+			"decision", string(result.Action),
+			"reason", result.Reason,
+		)
+
 		return result, nil
 	}
+
+	log.Info(
+		"Carbon forecast retrieved",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "get_forecast",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldSignal, signals.SignalTypeCarbon,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusSuccess,
+		logging.FieldDuration, logging.SinceMillis(carbonForecastStart),
+	)
+
+	// Retrieve cost forecast.
+	costForecastStart := time.Now()
+
+	log.V(1).Info(
+		"Requesting cost forecast",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "get_forecast",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldSignal, signals.SignalTypeCost,
+		logging.FieldRegion, signals.RegionAllIndia,
+		logging.FieldStatus, logging.StatusStarted,
+	)
 
 	costForecast, costErr := e.signalSource.GetForecastSignals(
 		ctx,
@@ -138,52 +457,141 @@ func (e *Engine) Evaluate(ctx context.Context, workload WorkloadRequest) (Decisi
 		},
 		e.config.ForecastHorizon,
 	)
+
 	if costErr != nil {
 		if err := ctx.Err(); err != nil {
+			log.Error(
+				err,
+				"Cost forecast request cancelled",
+				logging.FieldComponent, logging.ComponentDecisionEngine,
+				logging.FieldOperation, "get_forecast",
+				logging.FieldWorkload, workload.Name,
+				logging.FieldSignal, signals.SignalTypeCost,
+				logging.FieldRegion, signals.RegionAllIndia,
+				logging.FieldStatus, logging.StatusFailure,
+				logging.FieldDuration, logging.SinceMillis(costForecastStart),
+			)
+
 			return Decision{}, err
 		}
-		result.Metadata["forecast"] = "unavailable; current option selected"
+
+		log.Error(
+			costErr,
+			"Cost forecast unavailable",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "get_forecast",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldSignal, signals.SignalTypeCost,
+			logging.FieldRegion, signals.RegionAllIndia,
+			logging.FieldStatus, logging.StatusFailure,
+			logging.FieldDuration, logging.SinceMillis(costForecastStart),
+		)
+
+		result.Metadata["forecast"] =
+			"unavailable; current option selected"
+
+		log.Info(
+			"Decision completed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "evaluate",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			logging.FieldDuration, logging.SinceMillis(start),
+			"decision", string(result.Action),
+			"reason", result.Reason,
+		)
+
 		return result, nil
 	}
+
+	log.Info(
+		"Cost forecast retrieved",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "get_forecast",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldSignal, signals.SignalTypeCost,
+		logging.FieldRegion, signals.RegionAllIndia,
+		logging.FieldStatus, logging.StatusSuccess,
+		logging.FieldDuration, logging.SinceMillis(costForecastStart),
+	)
 
 	result.Metadata["forecast"] = "evaluated"
 
 	best := currentWindow
 	latestStart := now.Add(workload.MaxDelay)
 
-	deadlineStart := workload.Deadline.Add(-workload.ExpectedRuntime)
+	deadlineStart := workload.Deadline.Add(
+		-workload.ExpectedRuntime,
+	)
+
 	if deadlineStart.Before(latestStart) {
 		latestStart = deadlineStart
 	}
 
 	costByDate := make(map[string]signals.Signal, len(costForecast))
+
 	for _, item := range costForecast {
 		if err := ctx.Err(); err != nil {
+			log.Error(
+				err,
+				"Forecast evaluation cancelled",
+				logging.FieldComponent, logging.ComponentDecisionEngine,
+				logging.FieldOperation, "evaluate_forecast",
+				logging.FieldWorkload, workload.Name,
+				logging.FieldRegion, region,
+				logging.FieldStatus, logging.StatusFailure,
+				logging.FieldDuration, logging.SinceMillis(start),
+			)
+
 			return Decision{}, err
 		}
 
-		if isUsableCostForecast(item, now) {
-			costByDate[item.Timestamp.UTC().Format("2006-01-02")] = item
+		if isUsableCostForecast(
+			item,
+			now,
+		) {
+			dateKey := item.Timestamp.UTC().Format("2006-01-02")
+			costByDate[dateKey] = item
 		}
 	}
 
 	for _, carbon := range carbonForecast {
 		if err := ctx.Err(); err != nil {
+			log.Error(
+				err,
+				"Forecast evaluation cancelled",
+				logging.FieldComponent, logging.ComponentDecisionEngine,
+				logging.FieldOperation, "evaluate_forecast",
+				logging.FieldWorkload, workload.Name,
+				logging.FieldRegion, region,
+				logging.FieldStatus, logging.StatusFailure,
+				logging.FieldDuration, logging.SinceMillis(start),
+			)
+
 			return Decision{}, err
 		}
 
-		if !isUsableForecast(carbon, signals.SignalTypeCarbon, region, now) {
+		if !isUsableForecast(
+			carbon,
+			signals.SignalTypeCarbon,
+			region,
+			now,
+		) {
 			continue
 		}
 
-		start := carbon.Timestamp
-		if !start.After(now) ||
-			start.After(latestStart) ||
-			start.Add(workload.ExpectedRuntime).After(workload.Deadline) {
+		startTime := carbon.Timestamp
+
+		if !startTime.After(now) ||
+			startTime.After(latestStart) ||
+			startTime.Add(workload.ExpectedRuntime).
+				After(workload.Deadline) {
 			continue
 		}
 
-		cost, ok := costByDate[start.UTC().Format("2006-01-02")]
+		dateKey := startTime.UTC().Format("2006-01-02")
+		cost, ok := costByDate[dateKey]
 		if !ok {
 			continue
 		}
@@ -192,10 +600,38 @@ func (e *Engine) Evaluate(ctx context.Context, workload WorkloadRequest) (Decisi
 		futureSet.Carbon = carbon
 		futureSet.Cost = cost
 
-		window, scoreErr := e.makeWindow(workload, futureSet, now, start, true)
+		window, scoreErr := e.makeWindow(
+			workload,
+			futureSet,
+			now,
+			startTime,
+			true,
+		)
+
 		if scoreErr != nil {
+			log.V(1).Info(
+				"Forecast window could not be scored",
+				logging.FieldComponent, logging.ComponentDecisionEngine,
+				logging.FieldOperation, "score_forecast_window",
+				logging.FieldWorkload, workload.Name,
+				logging.FieldRegion, region,
+				logging.FieldStatus, logging.StatusFailure,
+				"error", scoreErr.Error(),
+			)
+
 			continue
 		}
+
+		log.V(1).Info(
+			"Forecast window scored",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "score_forecast_window",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			"score", window.Score.Total,
+			"start_time", startTime,
+		)
 
 		if window.Score.Total < best.Score.Total {
 			best = window
@@ -203,7 +639,23 @@ func (e *Engine) Evaluate(ctx context.Context, workload WorkloadRequest) (Decisi
 	}
 
 	if best.StartTime.After(now) {
-		improvement := scoreImprovement(currentWindow.Score.Total, best.Score.Total)
+		improvement := scoreImprovement(
+			currentWindow.Score.Total,
+			best.Score.Total,
+		)
+
+		log.V(1).Info(
+			"Forecast window comparison completed",
+			logging.FieldComponent, logging.ComponentDecisionEngine,
+			logging.FieldOperation, "compare_windows",
+			logging.FieldWorkload, workload.Name,
+			logging.FieldRegion, region,
+			logging.FieldStatus, logging.StatusSuccess,
+			"current_score", currentWindow.Score.Total,
+			"best_forecast_score", best.Score.Total,
+			"improvement", improvement,
+		)
+
 		if improvement >= e.config.MinimumImprovement {
 			result.Action = ActionWait
 			result.Reason = fmt.Sprintf(
@@ -217,11 +669,37 @@ func (e *Engine) Evaluate(ctx context.Context, workload WorkloadRequest) (Decisi
 				result.RequeueAfter = time.Second
 			}
 
+			log.Info(
+				"Decision completed",
+				logging.FieldComponent, logging.ComponentDecisionEngine,
+				logging.FieldOperation, "evaluate",
+				logging.FieldWorkload, workload.Name,
+				logging.FieldRegion, region,
+				logging.FieldStatus, logging.StatusSuccess,
+				logging.FieldDuration, logging.SinceMillis(start),
+				"decision", string(result.Action),
+				"reason", result.Reason,
+			)
+
 			return result, nil
 		}
 	}
 
-	result.Reason = "no future window provides the configured minimum improvement"
+	result.Reason =
+		"no future window provides the configured minimum improvement"
+
+	log.Info(
+		"Decision completed",
+		logging.FieldComponent, logging.ComponentDecisionEngine,
+		logging.FieldOperation, "evaluate",
+		logging.FieldWorkload, workload.Name,
+		logging.FieldRegion, region,
+		logging.FieldStatus, logging.StatusSuccess,
+		logging.FieldDuration, logging.SinceMillis(start),
+		"decision", string(result.Action),
+		"reason", result.Reason,
+	)
+
 	return result, nil
 }
 
