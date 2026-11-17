@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,17 +17,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	kueuev1beta2 "sigs.k8s.io/kueue/apis/kueue/v1beta2"
 )
 
 const (
 	energyGateAdmissionCheck = "energygate-carbon-check"
 
-	// Temporary defaults for the current demo.
-	// These should eventually come from the workload specification.
+	// Demo defaults. They can be overridden through environment variables.
 	defaultRegion          = "IN-SO"
 	defaultExpectedRuntime = 5 * time.Minute
 	defaultMaxDelay        = 30 * time.Minute
+	defaultCPUWattsPerCore = 20.0
 )
 
 type WorkloadControllerReconciler struct {
@@ -224,46 +228,90 @@ func buildWorkloadRequest(
 	workload *kueuev1beta2.Workload,
 ) decisionengine.WorkloadRequest {
 
-	var cpuRequest string
-	var memoryRequest string
-	var gpuRequest string
+	var cpuRequest resource.Quantity
+	var memoryRequest resource.Quantity
+	var gpuRequest resource.Quantity
 
-	if len(workload.Spec.PodSets) > 0 {
-		for _, container := range workload.Spec.PodSets[0].Template.Spec.Containers {
+	// A Kueue PodSet describes a homogeneous group of pods. Resource requests
+	// are per pod, so multiply each PodSet's effective pod request by its count.
+	for _, podSet := range workload.Spec.PodSets {
+		podCPU, podMemory, podGPU := effectivePodRequests(podSet.Template.Spec)
 
-			if quantity, ok := container.Resources.Requests["cpu"]; ok {
-				cpuRequest = quantity.String()
-			}
+		count := int64(podSet.Count)
+		podCPU.Mul(count)
+		podMemory.Mul(count)
+		podGPU.Mul(count)
 
-			if quantity, ok := container.Resources.Requests["memory"]; ok {
-				memoryRequest = quantity.String()
-			}
-
-			if quantity, ok := container.Resources.Requests["nvidia.com/gpu"]; ok {
-				gpuRequest = quantity.String()
-			}
-		}
+		cpuRequest.Add(podCPU)
+		memoryRequest.Add(podMemory)
+		gpuRequest.Add(podGPU)
 	}
 
 	return decisionengine.WorkloadRequest{
 		Name:          workload.Name,
 		Namespace:     workload.Namespace,
-		Region:        defaultRegion,
-		Priority:      0,
-		CPURequest:    cpuRequest,
-		MemoryRequest: memoryRequest,
-		GPURequest:    gpuRequest,
+		Region:        workloadRegion(),
+		Priority:      workloadPriority(workload),
+		CPURequest:    cpuRequest.String(),
+		MemoryRequest: memoryRequest.String(),
+		GPURequest:    gpuRequest.String(),
 
 		// Temporary demo values.
-		ExpectedRuntime: defaultExpectedRuntime,
-		Deadline: time.Now().Add(
-			defaultExpectedRuntime + defaultMaxDelay,
+		ExpectedRuntime: expectedRuntime(),
+		Deadline: workload.CreationTimestamp.Time.Add(
+			expectedRuntime() + maxDelay(),
 		),
-		MaxDelay: defaultMaxDelay,
+		MaxDelay: maxDelay(),
 
 		// Temporary estimate based on requested CPU.
-		EstimatedEnergyWh: estimateEnergy(cpuRequest),
+		EstimatedEnergyWh: estimateEnergy(cpuRequest.String()),
 	}
+}
+
+func effectivePodRequests(podSpec corev1.PodSpec) (resource.Quantity, resource.Quantity, resource.Quantity) {
+	var regularCPU resource.Quantity
+	var regularMemory resource.Quantity
+	var regularGPU resource.Quantity
+
+	var initCPU resource.Quantity
+	var initMemory resource.Quantity
+	var initGPU resource.Quantity
+
+	for _, container := range podSpec.Containers {
+		if quantity, ok := container.Resources.Requests[corev1.ResourceCPU]; ok {
+			regularCPU.Add(quantity)
+		}
+		if quantity, ok := container.Resources.Requests[corev1.ResourceMemory]; ok {
+			regularMemory.Add(quantity)
+		}
+		if quantity, ok := container.Resources.Requests[corev1.ResourceName("nvidia.com/gpu")]; ok {
+			regularGPU.Add(quantity)
+		}
+	}
+
+	for _, container := range podSpec.InitContainers {
+		if quantity, ok := container.Resources.Requests[corev1.ResourceCPU]; ok && quantity.Cmp(initCPU) > 0 {
+			initCPU = quantity.DeepCopy()
+		}
+		if quantity, ok := container.Resources.Requests[corev1.ResourceMemory]; ok && quantity.Cmp(initMemory) > 0 {
+			initMemory = quantity.DeepCopy()
+		}
+		if quantity, ok := container.Resources.Requests[corev1.ResourceName("nvidia.com/gpu")]; ok && quantity.Cmp(initGPU) > 0 {
+			initGPU = quantity.DeepCopy()
+		}
+	}
+
+	if initCPU.Cmp(regularCPU) > 0 {
+		regularCPU = initCPU
+	}
+	if initMemory.Cmp(regularMemory) > 0 {
+		regularMemory = initMemory
+	}
+	if initGPU.Cmp(regularGPU) > 0 {
+		regularGPU = initGPU
+	}
+
+	return regularCPU, regularMemory, regularGPU
 }
 
 func estimateEnergy(cpuRequest string) float64 {
@@ -278,11 +326,55 @@ func estimateEnergy(cpuRequest string) float64 {
 
 	// Temporary estimate:
 	//
-	// CPU cores × runtime in hours × 20 W/core
+	// CPU cores × runtime in hours × configured W/core.
 	//
-	// The real carbon/cost/demand information comes from
-	// the signal pipeline.
-	return cpuCores * defaultExpectedRuntime.Hours() * 20
+	// ENERGYGATE_CPU_WATTS_PER_CORE can override the demo default of 20 W/core.
+	// This is an estimate, not measured workload power.
+	return cpuCores * expectedRuntime().Hours() * cpuWattsPerCore()
+}
+
+func workloadRegion() string {
+	if value := strings.TrimSpace(os.Getenv("ENERGYGATE_REGION")); value != "" {
+		return strings.ToUpper(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("ELECTRICITY_MAPS_ZONE")); value != "" {
+		return strings.ToUpper(value)
+	}
+	return defaultRegion
+}
+
+func expectedRuntime() time.Duration {
+	if value := strings.TrimSpace(os.Getenv("ENERGYGATE_EXPECTED_RUNTIME")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil && duration > 0 {
+			return duration
+		}
+	}
+	return defaultExpectedRuntime
+}
+
+func maxDelay() time.Duration {
+	if value := strings.TrimSpace(os.Getenv("ENERGYGATE_MAX_DELAY")); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil && duration >= 0 {
+			return duration
+		}
+	}
+	return defaultMaxDelay
+}
+
+func workloadPriority(workload *kueuev1beta2.Workload) int32 {
+	if workload != nil && workload.Spec.Priority != nil {
+		return *workload.Spec.Priority
+	}
+	return 0
+}
+
+func cpuWattsPerCore() float64 {
+	if value := strings.TrimSpace(os.Getenv("ENERGYGATE_CPU_WATTS_PER_CORE")); value != "" {
+		if watts, err := strconv.ParseFloat(value, 64); err == nil && watts > 0 && math.IsNaN(watts) == false && math.IsInf(watts, 0) == false {
+			return watts
+		}
+	}
+	return defaultCPUWattsPerCore
 }
 
 func parseCPU(value string) (float64, error) {

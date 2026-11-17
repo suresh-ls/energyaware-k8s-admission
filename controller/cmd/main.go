@@ -21,6 +21,7 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -51,6 +52,26 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envFloatOrDefault(name string, fallback float64) float64 {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed <= 0 {
+		setupLog.Error(err, "Invalid environment value; using default", "variable", name, "value", value, "default", fallback)
+		return fallback
+	}
+	return parsed
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -302,11 +323,18 @@ func main() {
 	//   Prometheus: http://prometheus-kube-prometheus-prometheus.monitoring.svc:9090
 	//   Region:     IN-SO
 	//   Cap:        10 kW
+	region := envOrDefault("ENERGYGATE_REGION", envOrDefault("ELECTRICITY_MAPS_ZONE", "IN-SO"))
+	prometheusURL := envOrDefault(
+		"ENERGYGATE_PROMETHEUS_URL",
+		"http://prometheus-kube-prometheus-prometheus.monitoring.svc:9090",
+	)
+	demandCapKW := envFloatOrDefault("ENERGYGATE_DEMAND_CAP_KW", 10)
+
 	demandProvider, err := demand.NewProvider(
 		demand.Config{
-			PrometheusURL: "http://prometheus-kube-prometheus-prometheus.monitoring.svc:9090",
-			Region:        "IN-SO",
-			CapKW:         10,
+			PrometheusURL: prometheusURL,
+			Region:        region,
+			CapKW:         demandCapKW,
 			MaxSampleAge:  1 * time.Minute,
 			Timeout:       5 * time.Second,
 		},
@@ -342,9 +370,15 @@ func main() {
 	// Decision Engine
 	// ---------------------------------------------------------------------
 
+	decisionConfig, err := decisionengine.ConfigFromEnv(decisionengine.DefaultConfig())
+	if err != nil {
+		setupLog.Error(err, "Invalid decision-engine configuration")
+		os.Exit(1)
+	}
+
 	decisionEngine, err := decisionengine.NewEngine(
 		signalHandler,
-		decisionengine.DefaultConfig(),
+		decisionConfig,
 	)
 	if err != nil {
 		setupLog.Error(err, "Failed to create decision engine")
@@ -356,7 +390,9 @@ func main() {
 		"carbonProvider", "electricity_maps",
 		"costProvider", "energymap",
 		"demandProvider", "kepler/prometheus",
-		"region", "IN-SO",
+		"region", region,
+		"prometheusURL", prometheusURL,
+		"demandCapKW", demandCapKW,
 	)
 
 	// ---------------------------------------------------------------------

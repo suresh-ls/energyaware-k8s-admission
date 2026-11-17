@@ -69,7 +69,7 @@ func validateSignal(signal Signal, now time.Time, maxAge time.Duration) error {
 			return fmt.Errorf("demand utilization must equal value/cap")
 		}
 		status := "WITHIN_CAP"
-		if signal.Value > signal.Cap {
+		if signal.Value >= signal.Cap {
 			status = "EXCEEDED"
 		}
 		if signal.Status != status {

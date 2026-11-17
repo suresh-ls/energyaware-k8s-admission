@@ -155,11 +155,21 @@ func TestEvaluateWaitsForBetterForecastWindow(t *testing.T) {
 	lowCost.IsForecast = true
 	lowCost.ValidUntil = now.Add(5 * time.Hour)
 
+	futureDemand := current.DemandCap
+	futureDemand.Value = 60
+	futureDemand.Cap = 100
+	futureDemand.Utilization = 0.6
+	futureDemand.Status = "WITHIN_CAP"
+	futureDemand.Timestamp = futureTime
+	futureDemand.ValidUntil = now.Add(5 * time.Hour)
+	futureDemand.IsForecast = true
+
 	f := &fakeSignals{
 		current: current,
 		forecasts: map[string][]signals.Signal{
-			signals.SignalTypeCarbon: {lowCarbon},
-			signals.SignalTypeCost:   {lowCost},
+			signals.SignalTypeCarbon:    {lowCarbon},
+			signals.SignalTypeCost:      {lowCost},
+			signals.SignalTypeDemandCap: {futureDemand},
 		},
 		forecastErrs: map[string]error{},
 	}
@@ -406,5 +416,139 @@ func TestDemandCapExceededUsesStatus(t *testing.T) {
 func TestDemandCapExceededUsesUtilization(t *testing.T) {
 	if !demandCapExceeded(1.0, "WITHIN_CAP") {
 		t.Fatal("expected utilization of 1.0 to trigger demand-cap constraint")
+	}
+}
+
+func TestEvaluateSkipsForecastThatDoesNotCoverExecutionWindow(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	current := validSignalSet(now)
+	futureTime := now.Add(2 * time.Hour)
+
+	futureCarbon := current.Carbon
+	futureCarbon.Value = 10
+	futureCarbon.Timestamp = futureTime
+	futureCarbon.IsForecast = true
+	futureCarbon.ValidUntil = futureTime.Add(30 * time.Minute) // shorter than 1h runtime
+
+	futureCost := current.Cost
+	futureCost.Value = 1
+	futureCost.Timestamp = futureTime
+	futureCost.IsForecast = true
+	futureCost.ValidUntil = futureTime.Add(30 * time.Minute)
+
+	futureDemand := current.DemandCap
+	futureDemand.Timestamp = futureTime
+	futureDemand.ValidUntil = futureTime.Add(30 * time.Minute)
+	futureDemand.IsForecast = true
+
+	f := &fakeSignals{
+		current: current,
+		forecasts: map[string][]signals.Signal{
+			signals.SignalTypeCarbon:    {futureCarbon},
+			signals.SignalTypeCost:      {futureCost},
+			signals.SignalTypeDemandCap: {futureDemand},
+		},
+		forecastErrs: map[string]error{},
+	}
+
+	d, err := newTestEngine(t, f, now).Evaluate(context.Background(), testWorkload(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Action != ActionRun {
+		t.Fatalf("got %s, want RUN because the forecast does not cover the full runtime", d.Action)
+	}
+}
+
+func TestEvaluateRunsCurrentWhenDemandForecastUnavailable(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	current := validSignalSet(now)
+	futureTime := now.Add(2 * time.Hour)
+
+	futureCarbon := current.Carbon
+	futureCarbon.Value = 10
+	futureCarbon.Timestamp = futureTime
+	futureCarbon.IsForecast = true
+	futureCarbon.ValidUntil = now.Add(5 * time.Hour)
+
+	futureCost := current.Cost
+	futureCost.Value = 1
+	futureCost.Timestamp = futureTime
+	futureCost.IsForecast = true
+	futureCost.ValidUntil = now.Add(5 * time.Hour)
+
+	f := &fakeSignals{
+		current: current,
+		forecasts: map[string][]signals.Signal{
+			signals.SignalTypeCarbon: {futureCarbon},
+			signals.SignalTypeCost:   {futureCost},
+		},
+		forecastErrs: map[string]error{
+			signals.SignalTypeDemandCap: errors.New("demand forecast unavailable"),
+		},
+	}
+
+	d, err := newTestEngine(t, f, now).Evaluate(
+		context.Background(),
+		testWorkload(now),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d.Action != ActionRun {
+		t.Fatalf("got %s, want RUN when future demand cannot be evaluated", d.Action)
+	}
+
+	if d.Metadata["demand_forecast"] != "unavailable; future windows skipped" {
+		t.Fatalf(
+			"unexpected demand forecast metadata: %q",
+			d.Metadata["demand_forecast"],
+		)
+	}
+}
+
+func TestDemandCapBoundaryIsConsistent(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	s := validSignalSet(now)
+	s.DemandCap.Value = 100
+	s.DemandCap.Cap = 100
+	s.DemandCap.Utilization = 1
+	s.DemandCap.Status = "EXCEEDED"
+
+	if err := validateSignalSet(s, "IN-SO", now); err != nil {
+		t.Fatalf("expected exactly-full demand cap to be valid: %v", err)
+	}
+	if !demandCapExceeded(s.DemandCap.Utilization, s.DemandCap.Status) {
+		t.Fatal("expected exactly-full demand cap to block scheduling")
+	}
+}
+
+func TestForecastFailurePolicyCanWait(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	f := &fakeSignals{
+		current: validSignalSet(now),
+		forecastErrs: map[string]error{
+			signals.SignalTypeCarbon: errors.New("no forecast"),
+		},
+	}
+
+	config := DefaultConfig()
+	config.ForecastFailurePolicy = ForecastFailureWait
+	e, err := NewEngine(f, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.clock = func() time.Time { return now }
+
+	d, err := e.Evaluate(context.Background(), testWorkload(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Action != ActionWait {
+		t.Fatalf("got %s, want WAIT", d.Action)
+	}
+	if d.RequeueAfter != config.DefaultRequeueAfter {
+		t.Fatalf("requeue=%s, want %s", d.RequeueAfter, config.DefaultRequeueAfter)
 	}
 }

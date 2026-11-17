@@ -407,8 +407,14 @@ func (e *Engine) Evaluate(
 			logging.FieldDuration, logging.SinceMillis(carbonForecastStart),
 		)
 
-		result.Metadata["forecast"] =
-			"unavailable; current option selected"
+		if e.config.ForecastFailurePolicy == ForecastFailureWait {
+			result.Action = ActionWait
+			result.Reason = "carbon forecast unavailable; waiting for forecast data"
+			result.RequeueAfter = e.config.DefaultRequeueAfter
+			result.Metadata["forecast"] = "unavailable; waiting for forecast"
+		} else {
+			result.Metadata["forecast"] = "unavailable; current option selected"
+		}
 
 		log.Info(
 			"Decision completed",
@@ -487,8 +493,14 @@ func (e *Engine) Evaluate(
 			logging.FieldDuration, logging.SinceMillis(costForecastStart),
 		)
 
-		result.Metadata["forecast"] =
-			"unavailable; current option selected"
+		if e.config.ForecastFailurePolicy == ForecastFailureWait {
+			result.Action = ActionWait
+			result.Reason = "carbon forecast unavailable; waiting for forecast data"
+			result.RequeueAfter = e.config.DefaultRequeueAfter
+			result.Metadata["forecast"] = "unavailable; waiting for forecast"
+		} else {
+			result.Metadata["forecast"] = "unavailable; current option selected"
+		}
 
 		log.Info(
 			"Decision completed",
@@ -515,6 +527,27 @@ func (e *Engine) Evaluate(
 		logging.FieldStatus, logging.StatusSuccess,
 		logging.FieldDuration, logging.SinceMillis(costForecastStart),
 	)
+
+	// Demand is also a hard constraint for future execution windows.
+	// Providers that do not expose demand forecasts are treated conservatively:
+	// current execution remains available, but future windows are not considered
+	// safe unless their demand conditions can be evaluated.
+	demandForecast, demandErr := e.signalSource.GetForecastSignals(
+		ctx,
+		signals.SignalRequest{
+			SignalType: signals.SignalTypeDemandCap,
+			Region:     region,
+		},
+		e.config.ForecastHorizon,
+	)
+	if demandErr != nil {
+		if err := ctx.Err(); err != nil {
+			return Decision{}, err
+		}
+		result.Metadata["demand_forecast"] = "unavailable; future windows skipped"
+	} else {
+		result.Metadata["demand_forecast"] = "evaluated"
+	}
 
 	result.Metadata["forecast"] = "evaluated"
 
@@ -582,17 +615,25 @@ func (e *Engine) Evaluate(
 		}
 
 		startTime := carbon.Timestamp
+		endTime := startTime.Add(workload.ExpectedRuntime)
+
+		if !forecastCoversWindow(carbon, startTime, endTime) {
+			continue
+		}
 
 		if !startTime.After(now) ||
 			startTime.After(latestStart) ||
-			startTime.Add(workload.ExpectedRuntime).
-				After(workload.Deadline) {
+			endTime.After(workload.Deadline) {
 			continue
 		}
 
 		dateKey := startTime.UTC().Format("2006-01-02")
 		cost, ok := costByDate[dateKey]
-		if !ok {
+		if !ok || !forecastCoversWindow(cost, startTime, startTime.Add(workload.ExpectedRuntime)) {
+			continue
+		}
+
+		if !futureDemandCoversWindow(demandForecast, startTime, startTime.Add(workload.ExpectedRuntime)) {
 			continue
 		}
 
@@ -787,7 +828,7 @@ func validateSignalSet(s signals.SignalSet, region string, now time.Time) error 
 	}
 
 	expectedStatus := "WITHIN_CAP"
-	if demand.Value > demand.Cap {
+	if demand.Value >= demand.Cap {
 		expectedStatus = "EXCEEDED"
 	}
 	if !strings.EqualFold(strings.TrimSpace(demand.Status), expectedStatus) {
@@ -867,6 +908,9 @@ func (e *Engine) makeWindow(
 	}
 
 	carbonScore := clamp01(carbonImpact / e.config.Bounds.MaxCarbonImpact)
+	// Energy is workload-intrinsic: the same workload has the same estimated
+	// energy consumption regardless of start time. The time-varying carbon
+	// impact and cost components are what make execution windows differ.
 	energyScore := clamp01(w.EstimatedEnergyWh / e.config.Bounds.MaxEnergyWh)
 	costScore := clamp01(set.Cost.Value / e.config.Bounds.MaxCostPerKWh)
 
@@ -895,6 +939,36 @@ func (e *Engine) makeWindow(
 			Total:        total,
 		},
 	}, nil
+}
+
+func forecastCoversWindow(signal signals.Signal, start, end time.Time) bool {
+	if signal.ValidUntil.IsZero() || end.Before(start) {
+		return false
+	}
+	return !signal.ValidUntil.Before(end)
+}
+
+func futureDemandCoversWindow(forecasts []signals.Signal, start, end time.Time) bool {
+	for _, signal := range forecasts {
+		if !signal.IsForecast ||
+			!strings.EqualFold(strings.TrimSpace(signal.SignalType), signals.SignalTypeDemandCap) ||
+			strings.TrimSpace(signal.Region) == "" ||
+			signal.Timestamp.IsZero() ||
+			signal.ValidUntil.IsZero() ||
+			signal.ValidUntil.Before(end) {
+			continue
+		}
+		if signal.Timestamp.After(end) {
+			continue
+		}
+		if signal.Utilization >= 1 || strings.EqualFold(strings.TrimSpace(signal.Status), "EXCEEDED") {
+			return false
+		}
+		if signal.Timestamp.Before(start) || signal.Timestamp.Equal(start) {
+			return true
+		}
+	}
+	return false
 }
 
 func deadlineAllowsImmediateRun(w WorkloadRequest, now time.Time) bool {
