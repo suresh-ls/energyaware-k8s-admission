@@ -131,6 +131,14 @@ func (h *Handler) GetSignal(
 	}
 
 	request = normalizeSignalRequest(request)
+	if request.SignalType == SignalTypeCloudSpot {
+		if err := request.CloudPool.Validate(); err != nil {
+			return Signal{}, err
+		}
+		if request.Region != request.CloudPool.Region {
+			return Signal{}, fmt.Errorf("cloud spot region does not match pool")
+		}
+	}
 
 	if request.SignalType == "" {
 		err := fmt.Errorf("requested signal type is required")
@@ -319,6 +327,12 @@ func (h *Handler) GetSignal(
 	}
 
 	providerRegion := normalizeSignalRegion(signal.Region)
+	if request.SignalType == SignalTypeCloudSpot {
+		providerRegion = strings.ToLower(strings.TrimSpace(signal.Region))
+		if err := ValidateCloudSpotSignal(signal, request.CloudPool, h.now()); err != nil {
+			return Signal{}, err
+		}
+	}
 
 	if providerRegion != request.Region {
 		err := fmt.Errorf(
@@ -525,6 +539,11 @@ func normalizeSignalRegion(region string) string {
 // cost is always sourced from the national ALL-INDIA market.
 func normalizeSignalRequest(request SignalRequest) SignalRequest {
 	request.SignalType = normalizeSignalType(request.SignalType)
+	if request.SignalType == SignalTypeCloudSpot {
+		request.Region = strings.ToLower(strings.TrimSpace(request.Region))
+		request.CloudPool = request.CloudPool.Canonical()
+		return request
+	}
 	request.Region = normalizeSignalRegion(request.Region)
 
 	if request.SignalType == SignalTypeCost {
