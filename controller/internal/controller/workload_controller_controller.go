@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/decision-engine"
+	decisionengine "github.com/suresh-ls/energyaware-k8s-admission/controller/internal/decision-engine"
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +39,9 @@ type WorkloadControllerReconciler struct {
 	DecisionEngine *decisionengine.Engine
 	CloudSpotPool  *signals.CloudSpotPool
 }
+
+// +kubebuilder:rbac:groups=kueue.x-k8s.io,resources=workloads,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kueue.x-k8s.io,resources=workloads/status,verbs=get;update;patch
 
 func (r *WorkloadControllerReconciler) Reconcile(
 	ctx context.Context,
