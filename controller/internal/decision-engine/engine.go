@@ -241,6 +241,10 @@ func (e *Engine) Evaluate(
 		},
 	}
 
+	if stop, err := e.evaluateCloudSpot(ctx, workload, currentSignals, now, &result); stop || err != nil {
+		return result, err
+	}
+
 	// Demand is a hard operational constraint.
 	if demandCapExceeded(
 		currentSignals.DemandCap.Utilization,

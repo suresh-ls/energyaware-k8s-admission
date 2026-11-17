@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"net/http"
@@ -42,6 +43,7 @@ import (
 	decisionengine "github.com/suresh-ls/energyaware-k8s-admission/controller/internal/decision-engine"
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
 	carbon "github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals/adapters/carbon"
+	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals/adapters/cloudspot"
 	cost "github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals/adapters/cost"
 	demand "github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals/adapters/demand"
 	// +kubebuilder:scaffold:imports
@@ -320,13 +322,20 @@ func main() {
 	// Provider router
 	// ---------------------------------------------------------------------
 
-	providerRouter, err := signals.NewProviderRouter(
-		map[string]signals.SignalProvider{
-			signals.SignalTypeCarbon:    carbonProvider,
-			signals.SignalTypeCost:      costProvider,
-			signals.SignalTypeDemandCap: demandProvider,
-		},
-	)
+	providers := map[string]signals.SignalProvider{
+		signals.SignalTypeCarbon:    carbonProvider,
+		signals.SignalTypeCost:      costProvider,
+		signals.SignalTypeDemandCap: demandProvider,
+	}
+	cloudPool, cloudProvider, err := cloudspot.FromEnvironment(context.Background(), httpClient)
+	if err != nil {
+		setupLog.Error(err, "Failed to configure cloud spot pricing")
+		os.Exit(1)
+	}
+	if cloudProvider != nil {
+		providers[signals.SignalTypeCloudSpot] = cloudProvider
+	}
+	providerRouter, err := signals.NewProviderRouter(providers)
 	if err != nil {
 		setupLog.Error(err, "Failed to create signal provider router")
 		os.Exit(1)
@@ -380,6 +389,7 @@ func main() {
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		DecisionEngine: decisionEngine,
+		CloudSpotPool:  cloudPool,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(
 			err,

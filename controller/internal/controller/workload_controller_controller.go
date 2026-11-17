@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/decision-engine"
+	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,6 +33,7 @@ type WorkloadControllerReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
 	DecisionEngine *decisionengine.Engine
+	CloudSpotPool  *signals.CloudSpotPool
 }
 
 func (r *WorkloadControllerReconciler) Reconcile(
@@ -73,6 +75,9 @@ func (r *WorkloadControllerReconciler) Reconcile(
 	}
 
 	request := buildWorkloadRequest(&workload)
+	if err := applyCloudSpotRequest(&workload, &request, r.CloudSpotPool); err != nil {
+		return r.updateAdmissionCheck(ctx, &workload, kueuev1beta2.CheckStateRejected, err.Error(), 0)
+	}
 
 	log.Info(
 		"Evaluating workload with EnergyGate",
@@ -115,8 +120,18 @@ func (r *WorkloadControllerReconciler) Reconcile(
 		"reason", decision.Reason,
 		"requeueAfter", decision.RequeueAfter,
 	)
+	if estimate := decision.CloudSpot; estimate != nil {
+		log.Info("Cloud spot compute cost estimated",
+			"workload", workload.Name, "namespace", workload.Namespace,
+			"pool", estimate.Pool, "pricePerInstanceHourUSD", estimate.PricePerInstanceHourUSD,
+			"estimatedCostUSD", estimate.EstimatedCostUSD, "budgetUSD", estimate.BudgetUSD,
+			"quoteCollectedAt", estimate.QuoteCollectedAt, "replay", estimate.Replay)
+	}
 
 	switch decision.Action {
+	case decisionengine.ActionReject:
+		return r.updateAdmissionCheck(ctx, &workload, kueuev1beta2.CheckStateRejected, decision.Reason, 0)
+
 	case decisionengine.ActionRun:
 		return r.updateAdmissionCheck(
 			ctx,
