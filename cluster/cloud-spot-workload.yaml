@@ -1,0 +1,34 @@
+# Control-plane simulation only: no owning Job and no application Pods.
+# Set deadline to a future time. Normal Kueue queue/check setup is required.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Workload
+metadata:
+  name: cloud-spot-demo
+  namespace: default
+  annotations:
+    energygate.io/cloud-spot-budget-usd: "0.10"
+    energygate.io/cloud-spot-instances: "1"
+    energygate.io/expected-runtime: "5m"
+    energygate.io/deadline: "2026-12-01T12:00:00Z"
+spec:
+  queueName: carbongate-local-queue
+  podSets:
+    - name: main
+      count: 1
+      template:
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            eks.amazonaws.com/capacityType: SPOT
+            node.kubernetes.io/instance-type: c5.xlarge
+            topology.kubernetes.io/zone: ap-south-1a
+            topology.kubernetes.io/region: ap-south-1
+            kubernetes.io/os: linux
+          containers:
+            - name: worker
+              image: busybox:1.37
+              command: ["sh", "-c", "sleep 300"]
+              resources:
+                requests:
+                  cpu: "1"
+                  memory: 128Mi

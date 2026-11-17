@@ -10,6 +10,9 @@ import (
 // validateSignal checks shared signal invariants. maxAge applies to the
 // observation/collection age, not to a future market delivery timestamp.
 func validateSignal(signal Signal, now time.Time, maxAge time.Duration) error {
+	if normalizeSignalType(signal.SignalType) == SignalTypeCloudSpot && (maxAge <= 0 || maxAge > 5*time.Minute) {
+		maxAge = 5 * time.Minute
+	}
 	if strings.TrimSpace(signal.SignalType) == "" {
 		return fmt.Errorf("signal type is required")
 	}
@@ -77,6 +80,14 @@ func validateSignal(signal Signal, now time.Time, maxAge time.Duration) error {
 		}
 		if signal.Quality == "STALE" {
 			return fmt.Errorf("stale demand is unavailable")
+		}
+	}
+	if normalizeSignalType(signal.SignalType) == SignalTypeCloudSpot {
+		if err := signal.CloudPool.Validate(); err != nil {
+			return err
+		}
+		if signal.Unit != CloudSpotUnit || signal.Value < 0 || signal.IsForecast || signal.CollectedAt.IsZero() {
+			return fmt.Errorf("cloud spot must be a collected current nonnegative USD instance-hour quote")
 		}
 	}
 	return nil
