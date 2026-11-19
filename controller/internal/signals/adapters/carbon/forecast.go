@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/suresh-ls/energyaware-k8s-admission/controller/internal/signals"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type forecastEntry struct {
@@ -27,7 +28,7 @@ func (c *Client) GetForecast(
 	ctx context.Context,
 	region string,
 	horizon time.Duration,
-) ([]signals.Signal, error) {
+) (results []signals.Signal, retErr error) {
 	if c == nil {
 		return nil, fmt.Errorf("carbon client is nil")
 	}
@@ -42,6 +43,40 @@ func (c *Client) GetForecast(
 	if zone == "" {
 		zone = c.config.Zone
 	}
+
+	logger := log.FromContext(ctx).WithName("carbon")
+	start := time.Now()
+	var httpStatus int
+
+	defer func() {
+		duration := time.Since(start).Milliseconds()
+
+		if retErr != nil {
+			errorCategory := "carbon_retrieval_failed"
+			if httpStatus != 0 {
+				errorCategory = "provider_http_error"
+			}
+
+			logger.Error(nil, "Failed to fetch carbon forecast",
+				"errorCategory", errorCategory,
+				"httpStatus", httpStatus,
+				"zone", zone,
+				"horizonHours", horizon.Hours(),
+				"provider", ProviderName,
+				"durationMs", duration,
+			)
+			return
+		}
+
+		logger.V(1).Info("Fetched carbon forecast",
+			"zone", zone,
+			"horizonHours", horizon.Hours(),
+			"recordCount", len(results),
+			"provider", ProviderName,
+			"durationMs", duration,
+		)
+	}()
+
 	if zone != c.config.Zone {
 		return nil, fmt.Errorf(
 			"requested region %s does not match configured zone %s",
@@ -77,11 +112,11 @@ func (c *Client) GetForecast(
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		httpStatus = resp.StatusCode
 		return nil, fmt.Errorf(
-			"Electricity Maps returned HTTP %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(body)),
+			"Electricity Maps returned HTTP %d",
+			resp.StatusCode,
 		)
 	}
 
@@ -140,5 +175,6 @@ func (c *Client) GetForecast(
 		})
 	}
 
-	return forecastSignals, nil
+	results = forecastSignals
+	return results, nil
 }

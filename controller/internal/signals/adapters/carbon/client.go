@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type Client struct {
@@ -13,7 +15,12 @@ type Client struct {
 }
 
 func NewClient(config Config) (*Client, error) {
+	logger := log.Log.WithName("carbon")
+
 	if err := config.validate(); err != nil {
+		logger.Error(err, "Failed to initialize Carbon client",
+			"provider", ProviderName,
+		)
 		return nil, err
 	}
 
@@ -24,10 +31,18 @@ func NewClient(config Config) (*Client, error) {
 		}
 	}
 
-	return &Client{
+	client := &Client{
 		config: config,
 		http:   httpClient,
-	}, nil
+	}
+
+	logger.Info("Carbon client initialized",
+		"provider", ProviderName,
+		"zone", config.Zone,
+		"timeout", config.RequestTimeout.String(),
+	)
+
+	return client, nil
 }
 
 func (c *Client) newRequest(ctx context.Context, endpoint string) (*http.Request, error) {
