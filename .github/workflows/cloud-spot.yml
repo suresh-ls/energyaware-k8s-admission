@@ -33,5 +33,7 @@ jobs:
           go vet ./cmd/... ./internal/...
       - name: Check module consistency
         run: |
+          go version
+          go env GOVERSION GOOS GOARCH GOTOOLCHAIN GOFLAGS
           go mod tidy
           git diff --exit-code -- go.mod go.sum
