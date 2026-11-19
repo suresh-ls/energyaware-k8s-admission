@@ -1,0 +1,12 @@
+{
+  "pool": {
+    "provider": "aws",
+    "region": "ap-south-1",
+    "availability_zone": "ap-south-1a",
+    "instance_type": "c5.xlarge",
+    "product": "Linux/UNIX"
+  },
+  "records": [
+    {"timestamp": "2026-01-01T00:00:00Z", "price_usd": "0.20"}
+  ]
+}

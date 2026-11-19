@@ -6,6 +6,7 @@ const (
 	SignalTypeCarbon    = "carbon"
 	SignalTypeCost      = "cost"
 	SignalTypeDemandCap = "demand_cap"
+	SignalTypeCloudSpot = "cloud_spot"
 	RegionAllIndia      = "ALL-INDIA"
 )
 
@@ -13,6 +14,7 @@ const (
 type SignalRequest struct {
 	SignalType string
 	Region     string
+	CloudPool  CloudSpotPool
 }
 
 // Signal represents a normalized signal returned by a provider.
@@ -26,10 +28,11 @@ type Signal struct {
 	Timestamp time.Time `json:"timestamp"`
 	// CollectedAt records when the adapter retrieved the signal; do not
 	// overwrite Timestamp with collection time.
-	CollectedAt time.Time `json:"collected_at,omitempty"`
-	ValidUntil  time.Time `json:"valid_until"`
-	IsForecast  bool      `json:"is_forecast"`
-	Quality     string    `json:"quality"`
+	CollectedAt time.Time     `json:"collected_at,omitempty"`
+	ValidUntil  time.Time     `json:"valid_until"`
+	IsForecast  bool          `json:"is_forecast"`
+	Quality     string        `json:"quality"`
+	CloudPool   CloudSpotPool `json:"cloud_pool,omitzero"`
 
 	// Demand-specific metadata. Demand providers should populate these fields.
 	Cap         float64 `json:"cap,omitempty"`

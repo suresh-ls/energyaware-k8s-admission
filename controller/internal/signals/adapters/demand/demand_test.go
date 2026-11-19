@@ -26,7 +26,7 @@ func TestProviderRouterHandler(t *testing.T) {
 		name, watts, status string
 		utilization         float64
 	}{
-		{"below", "7500", StatusWithinCap, .75}, {"equal", "10000", StatusWithinCap, 1}, {"above", "12000", StatusExceeded, 1.2}, {"zero", "0", StatusWithinCap, 0},
+		{"below", "7500", StatusWithinCap, .75}, {"equal", "10000", StatusExceeded, 1}, {"above", "12000", StatusExceeded, 1.2}, {"zero", "0", StatusWithinCap, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Second)

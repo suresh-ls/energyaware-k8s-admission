@@ -134,7 +134,7 @@ func (p *Provider) GetCurrentSignal(ctx context.Context, request signals.SignalR
 		return signals.Signal{}, fmt.Errorf("demand utilization overflow")
 	}
 	status := StatusWithinCap
-	if value > p.cfg.CapKW {
+	if value >= p.cfg.CapKW {
 		status = StatusExceeded
 	}
 	quality := "FRESH"
